@@ -287,9 +287,20 @@ class SemanticGraphView extends ItemView {
 		const svg = select<SVGSVGElement, unknown>(svgEl);
 		const g   = svg.append('g');
 
+		const BASE_LABEL_PX = 11;   // node label size at zoom=1
+		const BASE_ELABEL_PX = 9;   // edge label size at zoom=1
+
 		this.zoomBehavior = zoom<SVGSVGElement, unknown>()
 			.scaleExtent([0.05,10])
-			.on('zoom', ev => g.attr('transform', ev.transform));
+			.on('zoom', ev => {
+				g.attr('transform', ev.transform);
+				const k = ev.transform.k;
+				// Counter-scale labels so they always appear at a fixed screen size
+				g.selectAll<SVGTextElement, unknown>('.llm-graph-node-label')
+					.style('font-size', `${BASE_LABEL_PX / k}px`);
+				g.selectAll<SVGTextElement, unknown>('.llm-graph-edge-label')
+					.style('font-size', `${BASE_ELABEL_PX / k}px`);
+			});
 		svg.call(this.zoomBehavior);
 
 		// click on background → deselect
