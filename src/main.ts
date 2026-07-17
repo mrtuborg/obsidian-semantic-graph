@@ -2,7 +2,7 @@ import { Plugin, ItemView, WorkspaceLeaf, setIcon } from 'obsidian';
 import { select } from 'd3-selection';
 import {
 	forceSimulation, forceLink, forceManyBody,
-	forceCenter, forceCollide, forceX, forceY,
+	forceCollide, forceX, forceY,
 	SimulationNodeDatum, SimulationLinkDatum,
 	ForceLink,
 } from 'd3-force';
@@ -97,6 +97,7 @@ class SemanticGraphView extends ItemView {
 	private selectedId: string | null = null;
 	private searchQuery    = '';
 	private selectedDomain: string | null = null;
+	private _labelsUserSet = false; // true once user explicitly toggles label button
 
 	// physics state
 	private linkDist   = 60;
@@ -341,6 +342,17 @@ class SemanticGraphView extends ItemView {
 		container.addClass('llm-graph-container');
 		const A = this.analytics!;
 
+		// ── Auto-scale physics to graph size ───────────────────────────
+		const N = this.nodes.length;
+		if (N > 0) {
+			// charge: more nodes → stronger repulsion needed
+			this.chargeStr = Math.min(800, Math.max(120, Math.round(N * 2)));
+			// link distance: spread scales with sqrt(N)
+			this.linkDist  = Math.min(200, Math.max(50, Math.round(Math.sqrt(N) * 8)));
+			// auto-hide labels for large graphs (user can toggle)
+			if (!this._labelsUserSet) this.showNodeLabels = N <= 80;
+		}
+
 		// ── Toolbar ────────────────────────────────────────────────────
 		const toolbar = container.createDiv({ cls: 'llm-graph-toolbar' });
 
@@ -487,14 +499,15 @@ class SemanticGraphView extends ItemView {
 			const chargeForce = forceManyBody<WikiNode>().strength(-this.chargeStr);
 			const gX = forceX<WikiNode>(W/2).strength(this.gravityStr);
 			const gY = forceY<WikiNode>(H/2).strength(this.gravityStr);
+			// Collision radius scales with N to prevent overlap
+			const collideR = Math.max(15, Math.sqrt(N) * 2);
 
 			this.sim = forceSimulation<WikiNode>(this.nodes)
 				.force('link',    linkForce)
 				.force('charge',  chargeForce)
 				.force('gx',      gX)
 				.force('gy',      gY)
-				.force('center',  forceCenter(W/2,H/2))
-				.force('collide', forceCollide(18));
+				.force('collide', forceCollide(collideR));
 
 			// Build adjacency after simEdges resolved
 			adj = this.buildAdjacency(simEdges);
@@ -652,6 +665,7 @@ class SemanticGraphView extends ItemView {
 
 		// ── Toolbar toggle wiring ──────────────────────────────────────
 		nlBtn.addEventListener('click',()=>{
+			this._labelsUserSet = true; // user explicitly chose — stop auto-managing
 			this.showNodeLabels=!this.showNodeLabels;
 			nlBtn.toggleClass('llm-graph-btn--active',this.showNodeLabels);
 			this.selNodeLabel?.attr('display',this.showNodeLabels?null:'none');
