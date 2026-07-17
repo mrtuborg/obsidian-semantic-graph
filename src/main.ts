@@ -369,6 +369,7 @@ class SemanticGraphView extends ItemView {
 				.selectAll<SVGLineElement,typeof simEdges[0]>('line')
 				.data(simEdges).join('line')
 				.attr('class','llm-graph-edge')
+				.attr('stroke-width', BASE_STROKE)
 				.attr('marker-end','url(#llm-arrow)');
 			this.selEdgeLine = edgeLine;
 
