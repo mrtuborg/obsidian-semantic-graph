@@ -65,6 +65,7 @@ interface GraphSettings {
 	chargeStr:      number;
 	gravityStr:     number;
 	searchQuery:    string;
+	selectedDomain: string | null;
 }
 const DEFAULT_SETTINGS: GraphSettings = {
 	showNodeLabels: true,
@@ -76,6 +77,7 @@ const DEFAULT_SETTINGS: GraphSettings = {
 	chargeStr:      120,
 	gravityStr:     0.03,
 	searchQuery:    '',
+	selectedDomain: null,
 };
 
 class SemanticGraphView extends ItemView {
@@ -94,6 +96,7 @@ class SemanticGraphView extends ItemView {
 	private hiddenTypes    = new Set<string>();
 	private selectedId: string | null = null;
 	private searchQuery    = '';
+	private selectedDomain: string | null = null;
 
 	// physics state
 	private linkDist   = 60;
@@ -138,6 +141,7 @@ class SemanticGraphView extends ItemView {
 		this.chargeStr      = s.chargeStr;
 		this.gravityStr     = s.gravityStr;
 		this.searchQuery    = s.searchQuery;
+		this.selectedDomain = s.selectedDomain ?? null;
 	}
 
 	private saveSettings() {
@@ -151,6 +155,7 @@ class SemanticGraphView extends ItemView {
 			chargeStr:      this.chargeStr,
 			gravityStr:     this.gravityStr,
 			searchQuery:    this.searchQuery,
+			selectedDomain: this.selectedDomain,
 		};
 		this.plugin.saveData(s);
 	}
@@ -278,10 +283,12 @@ class SemanticGraphView extends ItemView {
 		if (!this.selNodeEl) return;
 		const sel  = this.selectedId;
 		const neighbors = sel ? (adj.get(sel) ?? new Set()) : null;
+		const dom = this.selectedDomain;
 
 		// node opacity
 		this.selNodeEl.style('opacity', (d: WikiNode) => {
 			if (this.hiddenTypes.has(d.type)) return '0';
+			if (dom && d.domain !== dom) return '0.07';
 			if (!sel) return '1';
 			return d.id === sel || neighbors!.has(d.id) ? '1' : '0.07';
 		}).style('display', (d: WikiNode) =>
@@ -292,6 +299,7 @@ class SemanticGraphView extends ItemView {
 		const edgeOpacity = (e: any) => {
 			const s = (e.source as WikiNode), t = (e.target as WikiNode);
 			if (this.hiddenTypes.has(s.type) || this.hiddenTypes.has(t.type)) return '0';
+			if (dom && s.domain !== dom && t.domain !== dom) return '0.04';
 			if (!sel) return '0.55';
 			return (s.id===sel || t.id===sel) ? '0.9' : '0.04';
 		};
@@ -443,7 +451,7 @@ class SemanticGraphView extends ItemView {
 		const svgEl  = layout.createSvg('svg', { cls: 'llm-graph-svg' });
 		this.svgEl   = svgEl;
 		const sidebar = layout.createDiv({ cls: 'llm-graph-sidebar' });
-		this.buildSidebar(sidebar, A);
+		this.buildSidebar(sidebar, A, adj);
 
 		// ── D3 setup ───────────────────────────────────────────────────
 		const svg = select<SVGSVGElement, unknown>(svgEl);
@@ -716,7 +724,7 @@ class SemanticGraphView extends ItemView {
 	}
 
 	// ── 5. Sidebar ────────────────────────────────────────────────────
-	private buildSidebar(sidebar: HTMLElement, A: Analytics) {
+	private buildSidebar(sidebar: HTMLElement, A: Analytics, adj: Map<string,Set<string>>) {
 		const section = (title: string) => {
 			const s = sidebar.createDiv({ cls:'llm-sb-section' });
 			s.createDiv({ cls:'llm-sb-title', text: title });
@@ -801,15 +809,29 @@ class SemanticGraphView extends ItemView {
 			row.createSpan({cls:'llm-sb-hub-deg',text:String(h.deg)});
 		});
 
-		// Domain coverage
+		// Domain coverage — click to filter graph
 		const ds = section('Domain Coverage');
 		const maxD = Math.max(...A.domains.map(d=>d.count),1);
+		const domainRows = new Map<string, HTMLElement>();
 		for (const d of A.domains) {
-			const row=ds.createDiv({cls:'llm-sb-bar-row'});
-			row.createSpan({cls:'llm-sb-bar-name',text:d.name});
-			const track=row.createDiv({cls:'llm-sb-track'});
-			track.createDiv({cls:'llm-sb-fill llm-sb-fill--teal',style:`width:${d.count/maxD*100}%`});
-			row.createSpan({cls:'llm-sb-bar-cnt',text:String(d.count)});
+			const row = ds.createDiv({ cls: 'llm-sb-bar-row llm-sb-domain-row' });
+			domainRows.set(d.name, row);
+			if (this.selectedDomain === d.name) row.addClass('llm-sb-domain-row--active');
+			row.createSpan({ cls: 'llm-sb-bar-name', text: d.name });
+			const track = row.createDiv({ cls: 'llm-sb-track' });
+			track.createDiv({ cls: 'llm-sb-fill llm-sb-fill--teal', style: `width:${d.count/maxD*100}%` });
+			row.createSpan({ cls: 'llm-sb-bar-cnt', text: String(d.count) });
+			row.addEventListener('click', () => {
+				if (this.selectedDomain === d.name) {
+					this.selectedDomain = null;
+					domainRows.forEach(r => r.removeClass('llm-sb-domain-row--active'));
+				} else {
+					this.selectedDomain = d.name;
+					domainRows.forEach((r, n) => r.toggleClass('llm-sb-domain-row--active', n === d.name));
+				}
+				this.applyVisibility(adj);
+				this.saveSettings();
+			});
 		}
 	}
 }
