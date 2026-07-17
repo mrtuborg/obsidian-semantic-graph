@@ -814,8 +814,10 @@ class SemanticGraphView extends ItemView {
 				.force('gy',      gY)
 				.force('collide', forceCollide(collideR));
 
-			// Build adjacency after simEdges resolved
-			adj = this.buildAdjacency(simEdges);
+			// Build adjacency after simEdges resolved — mutate in place so sidebar closures see the updated map
+			const builtAdj = this.buildAdjacency(simEdges);
+			adj.clear();
+			for (const [k, v] of builtAdj) adj.set(k, v);
 
 			// Edges — colored by domain if both nodes share a domain
 			const edgeLine = g.append('g')
