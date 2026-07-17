@@ -65,6 +65,7 @@ interface Analytics {
 	hubs: { id: string; deg: number; type: string }[];
 	domains: { name: string; count: number }[];
 	degreeOf: Map<string, number>;
+	intraDomainOut: Map<string, number>;  // out-degree within same domain
 }
 
 // ─── View ─────────────────────────────────────────────────────────────────────
@@ -284,6 +285,18 @@ class SemanticGraphView extends ItemView {
 			degreeOf.set(s, (degreeOf.get(s)??0)+1);
 			degreeOf.set(t, (degreeOf.get(t)??0)+1);
 		}
+
+		// Out-degree within same domain (proxy for "local children count")
+		const nodeById = new Map<string, WikiNode>(this.nodes.map(nd => [nd.id, nd]));
+		const intraDomainOut = new Map<string, number>();
+		for (const e of this.edges) {
+			const s = e.source as string, t = e.target as string;
+			const srcDomain = nodeById.get(s)?.domain;
+			const tgtDomain = nodeById.get(t)?.domain;
+			if (srcDomain && srcDomain === tgtDomain) {
+				intraDomainOut.set(s, (intraDomainOut.get(s)??0) + 1);
+			}
+		}
 		const n = this.nodes.length, m = this.edges.length;
 		const density  = n>1 ? +(m/(n*(n-1))).toFixed(4) : 0;
 		const avgDeg   = n>0 ? +([...degreeOf.values()].reduce((a,b)=>a+b,0)/n).toFixed(2) : 0;
@@ -308,7 +321,7 @@ class SemanticGraphView extends ItemView {
 		for (const nd of this.nodes) if(nd.domain) domainCnt.set(nd.domain,(domainCnt.get(nd.domain)??0)+1);
 		const domains = [...domainCnt.entries()].sort((a,b)=>b[1]-a[1]).map(([name,count])=>({name,count}));
 
-		return {n,m,density,avgDeg,orphans:orphanIds.length,orphanIds,layers,edgeTypes,hubs,domains,degreeOf};
+		return {n,m,density,avgDeg,orphans:orphanIds.length,orphanIds,layers,edgeTypes,hubs,domains,degreeOf,intraDomainOut};
 	}
 
 	// ── 3. Dim helpers ────────────────────────────────────────────────
@@ -608,9 +621,12 @@ class SemanticGraphView extends ItemView {
 				const color  = NODE_COLORS[d.type] ?? '#BAB0AC';
 				const shape  = NODE_SHAPES[d.type]  ?? 'circle';
 				const cls    = 'llm-graph-node-shape';
-				const deg    = A.degreeOf.get(d.id) ?? 0;
-				// Scale node size by degree (log scale, like Obsidian)
-				const s = 1 + Math.log1p(deg) * 0.35; // s≈1 for deg=0, s≈2.4 for deg=20
+				// Size: prefer intra-domain children count; fallback to total degree
+				const intraDom = A.intraDomainOut.get(d.id) ?? 0;
+				const deg      = A.degreeOf.get(d.id) ?? 0;
+				const sizeVal  = intraDom > 0 ? intraDom : deg;
+				// log scale; intra-domain hubs scale faster (×0.5 vs ×0.35)
+				const s = 1 + Math.log1p(sizeVal) * (intraDom > 0 ? 0.5 : 0.25);
 				const sw = g.append('g').attr('class', 'llm-node-shape-wrapper')
 					.attr('transform', `scale(${s})`);
 				if (shape === 'diamond') {
