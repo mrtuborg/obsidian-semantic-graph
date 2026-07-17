@@ -206,6 +206,48 @@ class SemanticGraphView extends ItemView {
 		// ── Toolbar ────────────────────────────────────────────────────
 		const toolbar = container.createDiv({ cls: 'llm-graph-toolbar' });
 
+		// ── Search bar ───────────────────────────────────────────────────
+		const searchBar = container.createDiv({ cls: 'llm-graph-searchbar' });
+		const searchInput = searchBar.createEl('input', {
+			cls: 'llm-graph-search',
+			attr: { type: 'text', placeholder: 'Search nodes… (title, type, domain)' }
+		});
+		// Clear button
+		const searchClear = searchBar.createEl('button', { cls: 'llm-graph-search-clear', text: '×' });
+		searchClear.style.display = 'none';
+
+		let searchQuery = '';
+		const applySearch = () => {
+			const q = searchQuery.toLowerCase().trim();
+			searchClear.style.display = q ? 'flex' : 'none';
+			if (!this.selNodeEl) return;
+			if (!q) {
+				this.selNodeEl.style('opacity', null).style('pointer-events', null);
+				this.selEdgeLine?.style('opacity', null);
+				this.selEdgeLabel?.style('opacity', null);
+				return;
+			}
+			const matchIds = new Set(
+				this.nodes
+					.filter(n =>
+						n.title.toLowerCase().includes(q) ||
+						n.type.toLowerCase().includes(q)  ||
+						n.domain.toLowerCase().includes(q)
+					)
+					.map(n => n.id)
+			);
+			this.selNodeEl
+				.style('opacity',        (d: WikiNode) => matchIds.has(d.id) ? '1' : '0.07')
+				.style('pointer-events', (d: WikiNode) => matchIds.has(d.id) ? null  : 'none');
+			this.selEdgeLine?.style('opacity', (d: any) =>
+				matchIds.has((d.source as WikiNode).id) || matchIds.has((d.target as WikiNode).id) ? '0.6' : '0.05');
+			this.selEdgeLabel?.style('opacity', (d: any) =>
+				matchIds.has((d.source as WikiNode).id) || matchIds.has((d.target as WikiNode).id) ? '1' : '0');
+		};
+
+		searchInput.addEventListener('input', () => { searchQuery = searchInput.value; applySearch(); });
+		searchClear.addEventListener('click', () => { searchInput.value = ''; searchQuery = ''; applySearch(); searchInput.focus(); });
+
 		const mkBtn = (icon: string, label: string, active = false) => {
 			const b = toolbar.createEl('button', { cls: 'llm-graph-btn' });
 			setIcon(b, icon);
