@@ -64,6 +64,7 @@ interface GraphSettings {
 	linkDist:       number;
 	chargeStr:      number;
 	gravityStr:     number;
+	labelFadeAt:    number; // zoom k at which labels are fully visible (fade starts below)
 	searchQuery:    string;
 	selectedDomain: string | null;
 }
@@ -76,6 +77,7 @@ const DEFAULT_SETTINGS: GraphSettings = {
 	linkDist:       60,
 	chargeStr:      120,
 	gravityStr:     0.03,
+	labelFadeAt:    0.9,
 	searchQuery:    '',
 	selectedDomain: null,
 };
@@ -104,6 +106,7 @@ class SemanticGraphView extends ItemView {
 	private linkDist   = 60;
 	private chargeStr  = 120;
 	private gravityStr = 0.03;
+	private labelFadeAt = 0.9; // zoom at which labels reach full opacity
 
 	// zoom state — persisted across refreshes
 	private savedTransform: { k: number; x: number; y: number } | null = null;
@@ -146,6 +149,7 @@ class SemanticGraphView extends ItemView {
 		this.linkDist       = s.linkDist;
 		this.chargeStr      = s.chargeStr;
 		this.gravityStr     = s.gravityStr;
+		this.labelFadeAt    = s.labelFadeAt ?? 0.9;
 		this.searchQuery    = s.searchQuery;
 		this.selectedDomain = s.selectedDomain ?? null;
 	}
@@ -160,6 +164,7 @@ class SemanticGraphView extends ItemView {
 			linkDist:       this.linkDist,
 			chargeStr:      this.chargeStr,
 			gravityStr:     this.gravityStr,
+			labelFadeAt:    this.labelFadeAt,
 			searchQuery:    this.searchQuery,
 			selectedDomain: this.selectedDomain,
 		};
@@ -439,20 +444,16 @@ class SemanticGraphView extends ItemView {
 		const svg = select<SVGSVGElement, unknown>(svgEl);
 		const g   = svg.append('g');
 
-		// Label opacity fade thresholds (screen-space zoom k)
-		// Labels fade out as user zooms out — Obsidian-style
-		const LABEL_FADE_MIN = 0.4;  // fully invisible at or below this zoom
-		const LABEL_FADE_MAX = 0.9;  // fully visible at or above this zoom
-
 		this.zoomBehavior = zoom<SVGSVGElement, unknown>()
 			.scaleExtent([0.05,10])
 			.on('zoom', ev => {
 				g.attr('transform', ev.transform);
 				const k = ev.transform.k;
-				// Labels scale naturally with zoom (no counter-scale)
-				// Opacity fades gradually: invisible when zoomed far out
+				// Labels fade: fully visible at k >= labelFadeAt, invisible at k <= labelFadeAt*0.45
+				const fadeMax = this.labelFadeAt;
+				const fadeMin = this.labelFadeAt * 0.45;
 				const labelOpacity = Math.max(0, Math.min(1,
-					(k - LABEL_FADE_MIN) / (LABEL_FADE_MAX - LABEL_FADE_MIN)
+					(k - fadeMin) / (fadeMax - fadeMin)
 				));
 				if (this.showNodeLabels)
 					g.selectAll<SVGTextElement, unknown>('.llm-graph-node-label')
@@ -665,7 +666,8 @@ class SemanticGraphView extends ItemView {
 					const val = +input.value;
 					const key = input.dataset.physics!;
 					const lbl = input.nextElementSibling as HTMLElement;
-					if (lbl) lbl.textContent = key==='gravityStr' ? val.toFixed(2) : String(val);
+					const isFloat = key === 'gravityStr' || key === 'labelFadeAt';
+					if (lbl) lbl.textContent = isFloat ? val.toFixed(2) : String(val);
 					if (key==='linkDist') {
 						this.linkDist = val;
 						(this.sim!.force('link') as ForceLink<WikiNode,WikiEdge>).distance(val);
@@ -676,6 +678,19 @@ class SemanticGraphView extends ItemView {
 						this.gravityStr = val;
 						(this.sim!.force('gx') as ReturnType<typeof forceX>).strength(val);
 						(this.sim!.force('gy') as ReturnType<typeof forceY>).strength(val);
+					} else if (key==='labelFadeAt') {
+						this.labelFadeAt = val;
+						// Trigger a synthetic zoom event to immediately re-apply opacity
+						const t = this.zoomBehavior.transform(svg as any);
+						const k = t.k;
+						const fadeMax = val, fadeMin = val * 0.45;
+						const op = String(Math.max(0, Math.min(1, (k - fadeMin) / (fadeMax - fadeMin))));
+						if (this.showNodeLabels)
+							g.selectAll('.llm-graph-node-label').style('opacity', op);
+						if (this.showEdgeLabels)
+							g.selectAll('.llm-graph-edge-label').style('opacity', op);
+						this.saveSettings();
+						return; // no sim restart needed
 					}
 					this.sim!.alpha(0.4).restart();
 					this.saveSettings();
@@ -735,9 +750,10 @@ class SemanticGraphView extends ItemView {
 			const display = step < 1 ? val.toFixed(2) : String(val);
 			row.createSpan({ cls:'llm-sb-slider-val', text: display });
 		};
-		mkSlider('Link dist',   'linkDist',   20,  200, this.linkDist,   5);
-		mkSlider('Repulsion',   'chargeStr',  30,  400, this.chargeStr,  10);
-		mkSlider('Gravity',     'gravityStr', 0,   0.3, this.gravityStr, 0.01);
+		mkSlider('Link dist',   'linkDist',   20,   200, this.linkDist,    5);
+		mkSlider('Repulsion',   'chargeStr',  30,   800, this.chargeStr,   10);
+		mkSlider('Gravity',     'gravityStr', 0,    0.3, this.gravityStr,  0.01);
+		mkSlider('Labels fade', 'labelFadeAt', 0.1, 3.0, this.labelFadeAt, 0.05);
 
 		// Graph Health
 		const hs = section('Graph Health');
