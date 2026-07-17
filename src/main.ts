@@ -108,6 +108,8 @@ class SemanticGraphView extends ItemView {
 
 	// pending rAF handle — cancelled before each rebuild
 	private pendingRaf: number | null = null;
+	// guard against concurrent async refreshes
+	private isRefreshing = false;
 
 	// live D3 selections
 	private selNodeEl:    any = null;
@@ -168,16 +170,19 @@ class SemanticGraphView extends ItemView {
 		await this.loadSettings();
 		await this.buildGraph();
 		this.render();
-		// Auto-refresh on vault changes (debounced 1.5s)
-		this.registerEvent(this.app.vault.on('modify', () => this.scheduleRefresh()));
-		this.registerEvent(this.app.vault.on('create', () => this.scheduleRefresh()));
-		this.registerEvent(this.app.vault.on('delete', () => this.scheduleRefresh()));
-		this.registerEvent(this.app.vault.on('rename', () => this.scheduleRefresh()));
+		// Auto-refresh only for wiki/ files — ignore journal, activities, etc.
+		const isWikiFile = (f: { path: string }) =>
+			f.path.startsWith('wiki/') && !EXCLUDED_PATHS.some(ex => f.path.includes(ex));
+		this.registerEvent(this.app.vault.on('modify', f => { if (isWikiFile(f)) this.scheduleRefresh(); }));
+		this.registerEvent(this.app.vault.on('create', f => { if (isWikiFile(f)) this.scheduleRefresh(); }));
+		this.registerEvent(this.app.vault.on('delete', f => { if (isWikiFile(f)) this.scheduleRefresh(); }));
+		this.registerEvent(this.app.vault.on('rename', (f) => { if (isWikiFile(f)) this.scheduleRefresh(); }));
 	}
 
 	async onClose() {
 		this.sim?.stop();
-		if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
+		if (this.refreshTimer !== null) { window.clearTimeout(this.refreshTimer); this.refreshTimer = null; }
+		this.isRefreshing = false;
 	}
 
 	private captureZoom() {
@@ -191,17 +196,29 @@ class SemanticGraphView extends ItemView {
 		if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
 		this.refreshTimer = window.setTimeout(async () => {
 			this.refreshTimer = null;
-			this.captureZoom();
-			await this.buildGraph();
-			this.render();
+			if (this.isRefreshing) return; // skip if previous refresh still running
+			this.isRefreshing = true;
+			try {
+				this.captureZoom();
+				await this.buildGraph();
+				this.render();
+			} finally {
+				this.isRefreshing = false;
+			}
 		}, 1500);
 	}
 
 	private async manualRefresh() {
 		if (this.refreshTimer !== null) { window.clearTimeout(this.refreshTimer); this.refreshTimer = null; }
-		this.captureZoom();
-		await this.buildGraph();
-		this.render();
+		if (this.isRefreshing) return;
+		this.isRefreshing = true;
+		try {
+			this.captureZoom();
+			await this.buildGraph();
+			this.render();
+		} finally {
+			this.isRefreshing = false;
+		}
 	}
 
 	// ── 1. Parse vault ────────────────────────────────────────────────
