@@ -25,6 +25,19 @@ const NODE_COLORS: Record<string, string> = {
 	synthesis: '#9C755F',  // earth brown     — synthesis
 };
 
+// Domain colors — generated from hash of domain name
+const DOMAIN_PALETTE = [
+	'#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd',
+	'#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf',
+	'#aec7e8','#ffbb78','#98df8a','#ff9896','#c5b0d5',
+	'#c49c94','#f7b6d2','#dbdb8d','#9edae5','#393b79',
+];
+function domainColor(domain: string): string {
+	let h = 0;
+	for (let i = 0; i < domain.length; i++) h = (Math.imul(31, h) + domain.charCodeAt(i)) >>> 0;
+	return DOMAIN_PALETTE[h % DOMAIN_PALETTE.length];
+}
+
 // Shape encodes epistemic category
 const NODE_SHAPES: Record<string, string> = {
 	axiom: 'diamond', rule: 'diamond',               // invariants
@@ -540,12 +553,17 @@ class SemanticGraphView extends ItemView {
 			// Build adjacency after simEdges resolved
 			adj = this.buildAdjacency(simEdges);
 
-			// Edges
+			// Edges — colored by domain if both nodes share a domain
 			const edgeLine = g.append('g')
 				.selectAll<SVGLineElement,typeof simEdges[0]>('line')
 				.data(simEdges).join('line')
 				.attr('class','llm-graph-edge')
 				.attr('stroke-width', 1.2)
+				.attr('stroke', (d: any) => {
+					const src = (d.source as WikiNode).domain;
+					const tgt = (d.target as WikiNode).domain;
+					return (src && src === tgt) ? domainColor(src) : 'var(--graph-line)';
+				})
 				.attr('marker-end','url(#llm-arrow)');
 			this.selEdgeLine = edgeLine;
 
