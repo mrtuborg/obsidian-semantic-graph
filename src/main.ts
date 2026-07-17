@@ -457,32 +457,20 @@ class SemanticGraphView extends ItemView {
 		const svg = select<SVGSVGElement, unknown>(svgEl);
 		const g   = svg.append('g');
 
-		const BASE_LABEL_PX  = 11;   // node label size at zoom=1
-		const BASE_ELABEL_PX = 9;    // edge label size at zoom=1
-		const BASE_STROKE    = 1.0;  // edge stroke-width at zoom=1
-		const BASE_ARROW_W   = 8;    // marker userSpace width at zoom=1
-		const BASE_ARROW_H   = 6;    // marker userSpace height at zoom=1
-		const BASE_NODE      = 1;    // node shape scale at zoom=1
+		const BASE_LABEL_PX  = 11;   // node label size at zoom=1 (counter-scaled)
+		const BASE_ELABEL_PX = 9;    // edge label size at zoom=1 (counter-scaled)
 
 		this.zoomBehavior = zoom<SVGSVGElement, unknown>()
 			.scaleExtent([0.05,10])
 			.on('zoom', ev => {
 				g.attr('transform', ev.transform);
 				const k = ev.transform.k;
-				// Counter-scale labels
+				// Counter-scale labels only — keeps text readable at any zoom
+				// Shapes, edges, arrows scale naturally with zoom (correct overview behaviour)
 				g.selectAll<SVGTextElement, unknown>('.llm-graph-node-label')
 					.style('font-size', `${BASE_LABEL_PX / k}px`);
 				g.selectAll<SVGTextElement, unknown>('.llm-graph-edge-label')
 					.style('font-size', `${BASE_ELABEL_PX / k}px`);
-				// Counter-scale edges
-				g.selectAll<SVGLineElement, unknown>('.llm-graph-edge')
-					.attr('stroke-width', BASE_STROKE / k);
-				// Counter-scale node shapes (scale the wrapper <g>)
-				g.selectAll<SVGGElement, unknown>('.llm-node-shape-wrapper')
-					.attr('transform', `scale(${BASE_NODE / k})`);
-				// Counter-scale arrow marker (userSpaceOnUse — independent of stroke-width)
-				svgEl.querySelector('#llm-arrow')?.setAttribute('markerWidth',  String(BASE_ARROW_W / k));
-				svgEl.querySelector('#llm-arrow')?.setAttribute('markerHeight', String(BASE_ARROW_H / k));
 			});
 		svg.call(this.zoomBehavior);
 
@@ -506,11 +494,11 @@ class SemanticGraphView extends ItemView {
 		});
 		refreshBtn.addEventListener('click', () => this.manualRefresh());
 
-		// Arrow marker
+		// Arrow marker — scales naturally with zoom (no counter-scaling needed)
 		svg.append('defs').append('marker').attr('id','llm-arrow')
 			.attr('viewBox','0 -3 6 6').attr('refX',10).attr('refY',0)
-			.attr('markerWidth', BASE_ARROW_W).attr('markerHeight', BASE_ARROW_H)
-			.attr('markerUnits','userSpaceOnUse')
+			.attr('markerWidth', 6).attr('markerHeight', 6)
+			.attr('markerUnits','strokeWidth')
 			.attr('orient','auto')
 			.append('path').attr('d','M0,-3L6,0L0,3').attr('fill','var(--text-faint)');
 
@@ -550,7 +538,7 @@ class SemanticGraphView extends ItemView {
 				.selectAll<SVGLineElement,typeof simEdges[0]>('line')
 				.data(simEdges).join('line')
 				.attr('class','llm-graph-edge')
-				.attr('stroke-width', BASE_STROKE)
+				.attr('stroke-width', 1.2)
 				.attr('marker-end','url(#llm-arrow)');
 			this.selEdgeLine = edgeLine;
 
