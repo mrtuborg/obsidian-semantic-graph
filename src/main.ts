@@ -55,7 +55,31 @@ interface Analytics {
 }
 
 // ─── View ─────────────────────────────────────────────────────────────────────
+interface GraphSettings {
+	showNodeLabels: boolean;
+	showEdgeLabels: boolean;
+	showArrows:     boolean;
+	sidebarOpen:    boolean;
+	hiddenTypes:    string[];
+	linkDist:       number;
+	chargeStr:      number;
+	gravityStr:     number;
+	searchQuery:    string;
+}
+const DEFAULT_SETTINGS: GraphSettings = {
+	showNodeLabels: true,
+	showEdgeLabels: true,
+	showArrows:     true,
+	sidebarOpen:    false,
+	hiddenTypes:    [],
+	linkDist:       60,
+	chargeStr:      120,
+	gravityStr:     0.03,
+	searchQuery:    '',
+};
+
 class SemanticGraphView extends ItemView {
+	private plugin: LLMWikiSemanticGraph;
 	private nodes: WikiNode[] = [];
 	private edges: WikiEdge[] = [];
 	private analytics: Analytics | null = null;
@@ -69,11 +93,15 @@ class SemanticGraphView extends ItemView {
 	private sidebarOpen    = false;
 	private hiddenTypes    = new Set<string>();
 	private selectedId: string | null = null;
+	private searchQuery    = '';
 
 	// physics state
-	private linkDist   = 60;   // was 90 — tighter clusters
-	private chargeStr  = 120;  // was 260 — less repulsion
-	private gravityStr = 0.03; // forceX/Y strength — pulls disconnected zones together
+	private linkDist   = 60;
+	private chargeStr  = 120;
+	private gravityStr = 0.03;
+
+	// zoom state — persisted across refreshes
+	private savedTransform: { k: number; x: number; y: number } | null = null;
 
 	// live D3 selections
 	private selNodeEl:    any = null;
@@ -89,26 +117,54 @@ class SemanticGraphView extends ItemView {
 	// auto-refresh
 	private refreshTimer: number | null = null;
 
+	constructor(leaf: any, plugin: LLMWikiSemanticGraph) {
+		super(leaf);
+		this.plugin = plugin;
+	}
+
+	private async loadSettings() {
+		const data = await this.plugin.loadData() as Partial<GraphSettings> | null;
+		if (!data) return;
+		const s = { ...DEFAULT_SETTINGS, ...data };
+		this.showNodeLabels = s.showNodeLabels;
+		this.showEdgeLabels = s.showEdgeLabels;
+		this.showArrows     = s.showArrows;
+		this.sidebarOpen    = s.sidebarOpen;
+		this.hiddenTypes    = new Set(s.hiddenTypes);
+		this.linkDist       = s.linkDist;
+		this.chargeStr      = s.chargeStr;
+		this.gravityStr     = s.gravityStr;
+		this.searchQuery    = s.searchQuery;
+	}
+
+	private saveSettings() {
+		const s: GraphSettings = {
+			showNodeLabels: this.showNodeLabels,
+			showEdgeLabels: this.showEdgeLabels,
+			showArrows:     this.showArrows,
+			sidebarOpen:    this.sidebarOpen,
+			hiddenTypes:    [...this.hiddenTypes],
+			linkDist:       this.linkDist,
+			chargeStr:      this.chargeStr,
+			gravityStr:     this.gravityStr,
+			searchQuery:    this.searchQuery,
+		};
+		this.plugin.saveData(s);
+	}
+
 	getViewType()    { return VIEW_TYPE; }
 	getDisplayText() { return 'Semantic Graph'; }
 	getIcon()        { return 'git-fork'; }
 
 	async onOpen() {
+		await this.loadSettings();
 		await this.buildGraph();
 		this.render();
 		// Auto-refresh on vault changes (debounced 1.5s)
-		this.registerEvent(
-			this.app.vault.on('modify', () => this.scheduleRefresh())
-		);
-		this.registerEvent(
-			this.app.vault.on('create', () => this.scheduleRefresh())
-		);
-		this.registerEvent(
-			this.app.vault.on('delete', () => this.scheduleRefresh())
-		);
-		this.registerEvent(
-			this.app.vault.on('rename', () => this.scheduleRefresh())
-		);
+		this.registerEvent(this.app.vault.on('modify', () => this.scheduleRefresh()));
+		this.registerEvent(this.app.vault.on('create', () => this.scheduleRefresh()));
+		this.registerEvent(this.app.vault.on('delete', () => this.scheduleRefresh()));
+		this.registerEvent(this.app.vault.on('rename', () => this.scheduleRefresh()));
 	}
 
 	async onClose() {
@@ -116,10 +172,18 @@ class SemanticGraphView extends ItemView {
 		if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
 	}
 
+	private captureZoom() {
+		if (this.svgEl && this.zoomBehavior) {
+			const t = this.zoomBehavior.transform(select(this.svgEl) as any);
+			this.savedTransform = { k: t.k, x: t.x, y: t.y };
+		}
+	}
+
 	private scheduleRefresh() {
 		if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
 		this.refreshTimer = window.setTimeout(async () => {
 			this.refreshTimer = null;
+			this.captureZoom();
 			await this.buildGraph();
 			this.render();
 		}, 1500);
@@ -127,6 +191,7 @@ class SemanticGraphView extends ItemView {
 
 	private async manualRefresh() {
 		if (this.refreshTimer !== null) { window.clearTimeout(this.refreshTimer); this.refreshTimer = null; }
+		this.captureZoom();
 		await this.buildGraph();
 		this.render();
 	}
@@ -255,9 +320,14 @@ class SemanticGraphView extends ItemView {
 		const searchClear = searchBar.createEl('button', { cls: 'llm-graph-search-clear', text: '×' });
 		searchClear.style.display = 'none';
 
-		let searchQuery = '';
+		// Restore saved search query
+		if (this.searchQuery) {
+			searchInput.value = this.searchQuery;
+			searchClear.style.display = 'flex';
+		}
+
 		const applySearch = () => {
-			const q = searchQuery.toLowerCase().trim();
+			const q = this.searchQuery.toLowerCase().trim();
 			searchClear.style.display = q ? 'flex' : 'none';
 			if (!this.selNodeEl) return;
 			if (!q) {
@@ -284,8 +354,8 @@ class SemanticGraphView extends ItemView {
 				matchIds.has((d.source as WikiNode).id) || matchIds.has((d.target as WikiNode).id) ? '1' : '0');
 		};
 
-		searchInput.addEventListener('input', () => { searchQuery = searchInput.value; applySearch(); });
-		searchClear.addEventListener('click', () => { searchInput.value = ''; searchQuery = ''; applySearch(); searchInput.focus(); });
+		searchInput.addEventListener('input', () => { this.searchQuery = searchInput.value; applySearch(); this.saveSettings(); });
+		searchClear.addEventListener('click', () => { searchInput.value = ''; this.searchQuery = ''; applySearch(); searchInput.focus(); this.saveSettings(); });
 
 		const mkBtn = (icon: string, label: string, active = false) => {
 			const b = toolbar.createEl('button', { cls: 'llm-graph-btn' });
@@ -339,6 +409,7 @@ class SemanticGraphView extends ItemView {
 				else this.hiddenTypes.add(t);
 				pill.toggleClass('llm-type-pill--off', this.hiddenTypes.has(t));
 				this.applyVisibility(adj);
+				this.saveSettings();
 			});
 		}
 		// "All" / "None" shortcuts
@@ -348,11 +419,13 @@ class SemanticGraphView extends ItemView {
 			this.hiddenTypes.clear();
 			pillMap.forEach((el) => el.removeClass('llm-type-pill--off'));
 			this.applyVisibility(adj);
+			this.saveSettings();
 		});
 		noneBtn.addEventListener('click', () => {
 			presentTypes.forEach(t => this.hiddenTypes.add(t));
 			pillMap.forEach((el) => el.addClass('llm-type-pill--off'));
 			this.applyVisibility(adj);
+			this.saveSettings();
 		});
 
 		// placeholder adjacency (filled after rAF)
@@ -397,6 +470,12 @@ class SemanticGraphView extends ItemView {
 			});
 		svg.call(this.zoomBehavior);
 
+		// Restore saved zoom transform (after refresh or load)
+		if (this.savedTransform) {
+			const { k, x, y } = this.savedTransform;
+			svg.call(this.zoomBehavior.transform, zoomIdentity.translate(x, y).scale(k));
+		}
+
 		// click on background → deselect
 		svg.on('click', (event) => {
 			if (event.target === svgEl) {
@@ -405,8 +484,10 @@ class SemanticGraphView extends ItemView {
 			}
 		});
 
-		resetBtn.addEventListener('click', () =>
-			svg.transition().duration(400).call(this.zoomBehavior.transform, zoomIdentity));
+		resetBtn.addEventListener('click', () => {
+			this.savedTransform = null;
+			svg.transition().duration(400).call(this.zoomBehavior.transform, zoomIdentity);
+		});
 		refreshBtn.addEventListener('click', () => this.manualRefresh());
 
 		// Arrow marker
@@ -593,6 +674,7 @@ class SemanticGraphView extends ItemView {
 						(this.sim!.force('gy') as ReturnType<typeof forceY>).strength(val);
 					}
 					this.sim!.alpha(0.4).restart();
+					this.saveSettings();
 				});
 			});
 		}); // rAF
@@ -602,21 +684,25 @@ class SemanticGraphView extends ItemView {
 			this.showNodeLabels=!this.showNodeLabels;
 			nlBtn.toggleClass('llm-graph-btn--active',this.showNodeLabels);
 			this.selNodeLabel?.attr('display',this.showNodeLabels?null:'none');
+			this.saveSettings();
 		});
 		elBtn.addEventListener('click',()=>{
 			this.showEdgeLabels=!this.showEdgeLabels;
 			elBtn.toggleClass('llm-graph-btn--active',this.showEdgeLabels);
 			this.selEdgeLabel?.attr('display',this.showEdgeLabels?null:'none');
+			this.saveSettings();
 		});
 		arBtn.addEventListener('click',()=>{
 			this.showArrows=!this.showArrows;
 			arBtn.toggleClass('llm-graph-btn--active',this.showArrows);
 			this.selEdgeLine?.attr('marker-end',this.showArrows?'url(#llm-arrow)':null);
+			this.saveSettings();
 		});
 		sbBtn.addEventListener('click',()=>{
 			this.sidebarOpen=!this.sidebarOpen;
 			sbBtn.toggleClass('llm-graph-btn--active',this.sidebarOpen);
 			sidebar.toggleClass('llm-graph-sidebar--open',this.sidebarOpen);
+			this.saveSettings();
 		});
 	}
 
@@ -722,7 +808,7 @@ class SemanticGraphView extends ItemView {
 // ─── Plugin ───────────────────────────────────────────────────────────────────
 export default class LLMWikiSemanticGraph extends Plugin {
 	async onload() {
-		this.registerView(VIEW_TYPE, leaf => new SemanticGraphView(leaf));
+		this.registerView(VIEW_TYPE, leaf => new SemanticGraphView(leaf, this));
 		this.addRibbonIcon('git-fork','LLM Wiki Semantic Graph',()=>this.activateView());
 		this.addCommand({id:'open-semantic-graph',name:'Open Semantic Graph',callback:()=>this.activateView()});
 	}
