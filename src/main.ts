@@ -94,6 +94,7 @@ class SemanticGraphView extends ItemView {
 	private showArrows     = true;
 	private sidebarOpen    = false;
 	private hiddenTypes    = new Set<string>();
+	private showOrphans    = false; // orphan nodes hidden by default
 	private selectedId: string | null = null;
 	private searchQuery    = '';
 	private selectedDomain: string | null = null;
@@ -305,15 +306,18 @@ class SemanticGraphView extends ItemView {
 		const neighbors = sel ? (adj.get(sel) ?? new Set()) : null;
 		const dom = this.selectedDomain;
 
-		// node opacity
+		// node opacity / display
 		this.selNodeEl.style('opacity', (d: WikiNode) => {
 			if (this.hiddenTypes.has(d.type)) return '0';
+			if (!this.showOrphans && (adj.get(d.id)?.size ?? 0) === 0) return '0';
 			if (dom && d.domain !== dom) return '0.07';
 			if (!sel) return '1';
 			return d.id === sel || neighbors!.has(d.id) ? '1' : '0.07';
-		}).style('display', (d: WikiNode) =>
-			this.hiddenTypes.has(d.type) ? 'none' : null
-		);
+		}).style('display', (d: WikiNode) => {
+			if (this.hiddenTypes.has(d.type)) return 'none';
+			if (!this.showOrphans && (adj.get(d.id)?.size ?? 0) === 0) return 'none';
+			return null;
+		});
 
 		// edge opacity
 		const edgeOpacity = (e: any) => {
@@ -568,8 +572,11 @@ class SemanticGraphView extends ItemView {
 				const color  = NODE_COLORS[d.type] ?? '#BAB0AC';
 				const shape  = NODE_SHAPES[d.type]  ?? 'circle';
 				const cls    = 'llm-graph-node-shape';
-				// Wrapper scaled by zoom handler to keep node size constant on screen
-				const sw = g.append('g').attr('class', 'llm-node-shape-wrapper');
+				const deg    = A.degreeOf.get(d.id) ?? 0;
+				// Scale node size by degree (log scale, like Obsidian)
+				const s = 1 + Math.log1p(deg) * 0.35; // s≈1 for deg=0, s≈2.4 for deg=20
+				const sw = g.append('g').attr('class', 'llm-node-shape-wrapper')
+					.attr('transform', `scale(${s})`);
 				if (shape === 'diamond') {
 					sw.append('rect').attr('class', cls)
 						.attr('width', 11).attr('height', 11)
@@ -674,6 +681,9 @@ class SemanticGraphView extends ItemView {
 					this.saveSettings();
 				});
 			});
+
+			// Apply initial visibility (hides orphans, hidden types, etc.)
+			this.applyVisibility(adj);
 		}); // rAF
 
 		// ── Toolbar toggle wiring ──────────────────────────────────────
@@ -743,6 +753,20 @@ class SemanticGraphView extends ItemView {
 			const card = cardGrid.createDiv({ cls:'llm-sb-card'+(c.warn?' llm-sb-card--warn':'') });
 			card.createDiv({cls:'llm-sb-card-val',text:String(c.val)});
 			card.createDiv({cls:'llm-sb-card-lbl',text:c.lbl});
+		}
+		// Orphans toggle
+		if (A.orphans > 0) {
+			const orphanRow = hs.createDiv({ cls: 'llm-sb-orphan-row' });
+			const orphanBtn = orphanRow.createEl('button', {
+				cls: 'llm-graph-btn llm-graph-btn--xs' + (this.showOrphans ? ' llm-graph-btn--active' : ''),
+				text: this.showOrphans ? `Hide ${A.orphans} orphans` : `Show ${A.orphans} orphans`,
+			});
+			orphanBtn.addEventListener('click', () => {
+				this.showOrphans = !this.showOrphans;
+				orphanBtn.textContent = this.showOrphans ? `Hide ${A.orphans} orphans` : `Show ${A.orphans} orphans`;
+				orphanBtn.toggleClass('llm-graph-btn--active', this.showOrphans);
+				this.applyVisibility(adj);
+			});
 		}
 
 		// Epistemic layers — clickable to toggle type visibility
