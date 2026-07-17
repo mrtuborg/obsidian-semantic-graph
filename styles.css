@@ -63,6 +63,16 @@
 }
 .llm-graph-search-clear:hover { color: var(--text-normal); }
 
+/* Semantic search status pill */
+.llm-graph-sem-indicator {
+  font-size: 10px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  padding: 0 6px;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
 .llm-graph-btn {
   display: inline-flex;
   align-items: center;
