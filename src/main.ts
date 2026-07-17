@@ -572,13 +572,12 @@ class SemanticGraphView extends ItemView {
 				.data(simEdges).join('line')
 				.attr('class','llm-graph-edge')
 				.attr('stroke-width', 1.2)
-				.attr('stroke', (d: any) => {
-					// Use source domain, fallback to target domain, fallback to neutral
+				.style('stroke', (d: any) => {
+					// inline style wins over CSS class — mandatory for domain coloring
 					const domain = (d.source as WikiNode).domain || (d.target as WikiNode).domain;
 					return domain ? domainColor(domain) : '#888';
 				})
-				.attr('stroke-opacity', (d: any) => {
-					// Same-domain edges: more visible; cross-domain: dimmer
+				.style('stroke-opacity', (d: any) => {
 					const src = (d.source as WikiNode).domain;
 					const tgt = (d.target as WikiNode).domain;
 					return (src && tgt && src === tgt) ? '0.7' : '0.3';
