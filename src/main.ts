@@ -525,19 +525,17 @@ class SemanticGraphView extends ItemView {
 		const neighbors = sel ? (adj.get(sel) ?? new Set()) : null;
 		const dom = this.selectedDomain;
 
-		// When a domain is selected, compute which nodes are neighbors of domain nodes
-		// (cross-domain nodes that have at least one edge into the selected domain)
+		// Compute domain neighbors from this.nodes (not from selNodeEl — datum access is unreliable there)
 		let domainNeighbors: Set<string> | null = null;
 		if (dom) {
 			domainNeighbors = new Set<string>();
-			// need access to nodes — iterate adj for domain nodes
-			this.selNodeEl.each((d: WikiNode) => {
-				if (d.domain === dom) {
-					for (const nbId of (adj.get(d.id) ?? [])) {
-						domainNeighbors!.add(nbId);
+			for (const nd of this.nodes) {
+				if (nd.domain === dom) {
+					for (const nbId of (adj.get(nd.id) ?? [])) {
+						domainNeighbors.add(nbId);
 					}
 				}
-			});
+			}
 		}
 
 		// node opacity / display
