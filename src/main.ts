@@ -559,7 +559,7 @@ class SemanticGraphView extends ItemView {
 		};
 		mkSlider('Link dist',   'linkDist',   20,  200, this.linkDist,   5);
 		mkSlider('Repulsion',   'chargeStr',  30,  400, this.chargeStr,  10);
-		mkSlider('Gravity',     'gravityStr', 0,   0.4, this.gravityStr, 0.01);
+		mkSlider('Gravity',     'gravityStr', 0,   0.3, this.gravityStr, 0.01);
 
 		// Graph Health
 		const hs = section('Graph Health');
