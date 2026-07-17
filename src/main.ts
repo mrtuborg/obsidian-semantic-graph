@@ -86,11 +86,50 @@ class SemanticGraphView extends ItemView {
 	// adjacency for dim-on-select
 	private neighborSet: Set<string> = new Set();
 
+	// auto-refresh
+	private refreshTimer: number | null = null;
+
 	getViewType()    { return VIEW_TYPE; }
 	getDisplayText() { return 'Semantic Graph'; }
 	getIcon()        { return 'git-fork'; }
-	async onOpen()  { await this.buildGraph(); this.render(); }
-	async onClose() { this.sim?.stop(); }
+
+	async onOpen() {
+		await this.buildGraph();
+		this.render();
+		// Auto-refresh on vault changes (debounced 1.5s)
+		this.registerEvent(
+			this.app.vault.on('modify', () => this.scheduleRefresh())
+		);
+		this.registerEvent(
+			this.app.vault.on('create', () => this.scheduleRefresh())
+		);
+		this.registerEvent(
+			this.app.vault.on('delete', () => this.scheduleRefresh())
+		);
+		this.registerEvent(
+			this.app.vault.on('rename', () => this.scheduleRefresh())
+		);
+	}
+
+	async onClose() {
+		this.sim?.stop();
+		if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
+	}
+
+	private scheduleRefresh() {
+		if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
+		this.refreshTimer = window.setTimeout(async () => {
+			this.refreshTimer = null;
+			await this.buildGraph();
+			this.render();
+		}, 1500);
+	}
+
+	private async manualRefresh() {
+		if (this.refreshTimer !== null) { window.clearTimeout(this.refreshTimer); this.refreshTimer = null; }
+		await this.buildGraph();
+		this.render();
+	}
 
 	// ── 1. Parse vault ────────────────────────────────────────────────
 	async buildGraph() {
@@ -256,8 +295,9 @@ class SemanticGraphView extends ItemView {
 			if (active) b.addClass('llm-graph-btn--active');
 			return b;
 		};
-		const resetBtn = mkBtn('rotate-ccw',  'Reset');
-		const nlBtn    = mkBtn('type',         'Nodes',     true);
+		const resetBtn    = mkBtn('rotate-ccw',  'Reset zoom');
+		const refreshBtn  = mkBtn('refresh-cw',  'Refresh');
+		const nlBtn       = mkBtn('type',         'Nodes',     true);
 		const elBtn    = mkBtn('minus',        'Edges',     true);
 		const arBtn    = mkBtn('arrow-right',  'Arrows',    true);
 		const sbBtn    = mkBtn('bar-chart-2',  'Analytics');
@@ -367,6 +407,7 @@ class SemanticGraphView extends ItemView {
 
 		resetBtn.addEventListener('click', () =>
 			svg.transition().duration(400).call(this.zoomBehavior.transform, zoomIdentity));
+		refreshBtn.addEventListener('click', () => this.manualRefresh());
 
 		// Arrow marker
 		svg.append('defs').append('marker').attr('id','llm-arrow')
