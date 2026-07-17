@@ -349,8 +349,8 @@ class SemanticGraphView extends ItemView {
 			this.chargeStr = Math.min(800, Math.max(120, Math.round(N * 2)));
 			// link distance: spread scales with sqrt(N)
 			this.linkDist  = Math.min(200, Math.max(50, Math.round(Math.sqrt(N) * 8)));
-			// auto-hide labels for large graphs (user can toggle)
-			if (!this._labelsUserSet) this.showNodeLabels = N <= 80;
+			// Labels always ON — zoom handler fades them out automatically at small scale
+			// (no per-N hiding needed; user can still toggle with button)
 		}
 
 		// ── Toolbar ────────────────────────────────────────────────────
@@ -413,9 +413,9 @@ class SemanticGraphView extends ItemView {
 		};
 		const resetBtn    = mkBtn('rotate-ccw',  'Reset zoom');
 		const refreshBtn  = mkBtn('refresh-cw',  'Refresh');
-		const nlBtn       = mkBtn('type',         'Nodes',     true);
-		const elBtn    = mkBtn('minus',        'Edges',     true);
-		const arBtn    = mkBtn('arrow-right',  'Arrows',    true);
+		const nlBtn       = mkBtn('type',         'Nodes',     this.showNodeLabels);
+		const elBtn    = mkBtn('minus',        'Edges',     this.showEdgeLabels);
+		const arBtn    = mkBtn('arrow-right',  'Arrows',    this.showArrows);
 		const sbBtn    = mkBtn('bar-chart-2',  'Analytics');
 		toolbar.createSpan({ cls:'llm-graph-stats',
 			text:`${A.n} nodes · ${A.m} edges · density ${A.density}` });
@@ -435,20 +435,27 @@ class SemanticGraphView extends ItemView {
 		const svg = select<SVGSVGElement, unknown>(svgEl);
 		const g   = svg.append('g');
 
-		const BASE_LABEL_PX  = 11;   // node label size at zoom=1 (counter-scaled)
-		const BASE_ELABEL_PX = 9;    // edge label size at zoom=1 (counter-scaled)
+		// Label opacity fade thresholds (screen-space zoom k)
+		// Labels fade out as user zooms out — Obsidian-style
+		const LABEL_FADE_MIN = 0.4;  // fully invisible at or below this zoom
+		const LABEL_FADE_MAX = 0.9;  // fully visible at or above this zoom
 
 		this.zoomBehavior = zoom<SVGSVGElement, unknown>()
 			.scaleExtent([0.05,10])
 			.on('zoom', ev => {
 				g.attr('transform', ev.transform);
 				const k = ev.transform.k;
-				// Counter-scale labels only — keeps text readable at any zoom
-				// Shapes, edges, arrows scale naturally with zoom (correct overview behaviour)
-				g.selectAll<SVGTextElement, unknown>('.llm-graph-node-label')
-					.style('font-size', `${BASE_LABEL_PX / k}px`);
-				g.selectAll<SVGTextElement, unknown>('.llm-graph-edge-label')
-					.style('font-size', `${BASE_ELABEL_PX / k}px`);
+				// Labels scale naturally with zoom (no counter-scale)
+				// Opacity fades gradually: invisible when zoomed far out
+				const labelOpacity = Math.max(0, Math.min(1,
+					(k - LABEL_FADE_MIN) / (LABEL_FADE_MAX - LABEL_FADE_MIN)
+				));
+				if (this.showNodeLabels)
+					g.selectAll<SVGTextElement, unknown>('.llm-graph-node-label')
+						.style('opacity', String(labelOpacity));
+				if (this.showEdgeLabels)
+					g.selectAll<SVGTextElement, unknown>('.llm-graph-edge-label')
+						.style('opacity', String(labelOpacity));
 			});
 		svg.call(this.zoomBehavior);
 
@@ -494,8 +501,13 @@ class SemanticGraphView extends ItemView {
 			const H = svgEl.clientHeight || 700;
 
 			// Forces (stored so sliders can update them)
+			// Link strength: 1/sqrt(deg_src * deg_tgt) — hub nodes pull weaker (like Obsidian)
 			const linkForce   = forceLink<WikiNode,WikiEdge>(simEdges)
-				.id(d=>d.id).distance(this.linkDist).strength(0.4);
+				.id(d=>d.id).distance(this.linkDist)
+				.strength((d: any) => 1 / Math.sqrt(
+					Math.max(1, A.degreeOf.get((d.source as WikiNode).id) ?? 1) *
+					Math.max(1, A.degreeOf.get((d.target as WikiNode).id) ?? 1)
+				));
 			const chargeForce = forceManyBody<WikiNode>().strength(-this.chargeStr);
 			const gX = forceX<WikiNode>(W/2).strength(this.gravityStr);
 			const gY = forceY<WikiNode>(H/2).strength(this.gravityStr);
@@ -582,7 +594,8 @@ class SemanticGraphView extends ItemView {
 			const nodeLabel = nodeEl.append('text')
 				.attr('class','llm-graph-node-label')
 				.attr('dy','0.35em').attr('x',13).attr('pointer-events','none')
-				.text(d=>d.title.length>26?d.title.slice(0,24)+'…':d.title);
+				.text(d=>d.title.length>26?d.title.slice(0,24)+'…':d.title)
+				.attr('display', this.showNodeLabels ? null : 'none'); // apply immediately
 			this.selNodeLabel = nodeLabel;
 
 			// Tooltip
