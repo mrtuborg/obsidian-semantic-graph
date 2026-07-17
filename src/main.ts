@@ -227,10 +227,30 @@ class SemanticGraphView extends ItemView {
 		typeBar.createSpan({ cls: 'llm-graph-typebar-label', text: 'Show:' });
 		const presentTypes = [...new Set(this.nodes.map(n=>n.type))].sort();
 		const pillMap = new Map<string, HTMLElement>();
+
+		// Returns a tiny SVG path string for each shape
+		const pillShapeSVG = (shape: string, color: string): string => {
+			const f = `fill="${color}"`;
+			const s = `stroke="${color}" fill="none" stroke-width="1.5"`;
+			switch (shape) {
+				case 'diamond':
+					return `<svg width="10" height="10" viewBox="0 0 10 10"><rect ${f} x="1.5" y="1.5" width="7" height="7" rx="1" transform="rotate(45 5 5)"/></svg>`;
+				case 'square':
+					return `<svg width="10" height="10" viewBox="0 0 10 10"><rect ${f} x="1.5" y="1.5" width="7" height="7" rx="1.5"/></svg>`;
+				case 'hexagon':
+					return `<svg width="10" height="10" viewBox="0 0 10 10"><polygon ${f} points="5,1 8.7,3 8.7,7 5,9 1.3,7 1.3,3"/></svg>`;
+				default: // circle
+					return `<svg width="10" height="10" viewBox="0 0 10 10"><circle ${f} cx="5" cy="5" r="4"/></svg>`;
+			}
+		};
+
 		for (const t of presentTypes) {
-			const pill = typeBar.createEl('button', { cls: 'llm-type-pill', text: t });
-			pill.style.setProperty('--pill-color', NODE_COLORS[t]??'#888');
+			const color = NODE_COLORS[t] ?? '#888';
+			const shape = NODE_SHAPES[t] ?? 'circle';
+			const pill  = typeBar.createEl('button', { cls: 'llm-type-pill' });
+			pill.style.setProperty('--pill-color', color);
 			pill.setAttribute('aria-label', `Toggle ${t} nodes`);
+			pill.innerHTML = pillShapeSVG(shape, color) + `<span>${t}</span>`;
 			pillMap.set(t, pill);
 			pill.addEventListener('click', () => {
 				if (this.hiddenTypes.has(t)) this.hiddenTypes.delete(t);
