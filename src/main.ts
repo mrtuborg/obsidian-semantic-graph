@@ -406,59 +406,6 @@ class SemanticGraphView extends ItemView {
 		toolbar.createSpan({ cls:'llm-graph-stats',
 			text:`${A.n} nodes · ${A.m} edges · density ${A.density}` });
 
-		// ── Type filter pills (second toolbar row) ──────────────────────
-		const typeBar = container.createDiv({ cls: 'llm-graph-typebar' });
-		typeBar.createSpan({ cls: 'llm-graph-typebar-label', text: 'Show:' });
-		const presentTypes = [...new Set(this.nodes.map(n=>n.type))].sort();
-		const pillMap = new Map<string, HTMLElement>();
-
-		// Returns a tiny SVG path string for each shape
-		const pillShapeSVG = (shape: string, color: string): string => {
-			const f = `fill="${color}"`;
-			const s = `stroke="${color}" fill="none" stroke-width="1.5"`;
-			switch (shape) {
-				case 'diamond':
-					return `<svg width="10" height="10" viewBox="0 0 10 10"><rect ${f} x="1.5" y="1.5" width="7" height="7" rx="1" transform="rotate(45 5 5)"/></svg>`;
-				case 'square':
-					return `<svg width="10" height="10" viewBox="0 0 10 10"><rect ${f} x="1.5" y="1.5" width="7" height="7" rx="1.5"/></svg>`;
-				case 'hexagon':
-					return `<svg width="10" height="10" viewBox="0 0 10 10"><polygon ${f} points="5,1 8.7,3 8.7,7 5,9 1.3,7 1.3,3"/></svg>`;
-				default: // circle
-					return `<svg width="10" height="10" viewBox="0 0 10 10"><circle ${f} cx="5" cy="5" r="4"/></svg>`;
-			}
-		};
-
-		for (const t of presentTypes) {
-			const color = NODE_COLORS[t] ?? '#888';
-			const shape = NODE_SHAPES[t] ?? 'circle';
-			const pill  = typeBar.createEl('button', { cls: 'llm-type-pill' });
-			pill.style.setProperty('--pill-color', color);
-			pill.setAttribute('aria-label', `Toggle ${t} nodes`);
-			pill.innerHTML = pillShapeSVG(shape, color) + `<span>${t}</span>`;
-			pillMap.set(t, pill);
-			pill.addEventListener('click', () => {
-				if (this.hiddenTypes.has(t)) this.hiddenTypes.delete(t);
-				else this.hiddenTypes.add(t);
-				pill.toggleClass('llm-type-pill--off', this.hiddenTypes.has(t));
-				this.applyVisibility(adj);
-				this.saveSettings();
-			});
-		}
-		// "All" / "None" shortcuts
-		const allBtn = typeBar.createEl('button', { cls: 'llm-graph-btn llm-graph-btn--xs', text: 'All' });
-		const noneBtn = typeBar.createEl('button', { cls: 'llm-graph-btn llm-graph-btn--xs', text: 'None' });
-		allBtn.addEventListener('click', () => {
-			this.hiddenTypes.clear();
-			pillMap.forEach((el) => el.removeClass('llm-type-pill--off'));
-			this.applyVisibility(adj);
-			this.saveSettings();
-		});
-		noneBtn.addEventListener('click', () => {
-			presentTypes.forEach(t => this.hiddenTypes.add(t));
-			pillMap.forEach((el) => el.addClass('llm-type-pill--off'));
-			this.applyVisibility(adj);
-			this.saveSettings();
-		});
 
 		// placeholder adjacency (filled after rAF)
 		let adj = new Map<string,Set<string>>();
@@ -730,6 +677,7 @@ class SemanticGraphView extends ItemView {
 
 	// ── 5. Sidebar ────────────────────────────────────────────────────
 	private buildSidebar(sidebar: HTMLElement, A: Analytics, adj: Map<string,Set<string>>) {
+		sidebar.empty(); // clear before rebuild (for toggle re-renders)
 		const section = (title: string) => {
 			const s = sidebar.createDiv({ cls:'llm-sb-section' });
 			s.createDiv({ cls:'llm-sb-title', text: title });
@@ -769,21 +717,79 @@ class SemanticGraphView extends ItemView {
 			card.createDiv({cls:'llm-sb-card-lbl',text:c.lbl});
 		}
 
-		// Epistemic layers
+		// Epistemic layers — clickable to toggle type visibility
 		const ls = section('Epistemic Layers');
+
+		// Shape SVG helper (reused from old pills)
+		const shapeSVG = (shape: string, color: string, dim = false): string => {
+			const op = dim ? ' opacity="0.35"' : '';
+			const f = `fill="${color}"${op}`;
+			switch (shape) {
+				case 'diamond':
+					return `<svg width="12" height="12" viewBox="0 0 10 10"><rect ${f} x="1.5" y="1.5" width="7" height="7" rx="1" transform="rotate(45 5 5)"/></svg>`;
+				case 'square':
+					return `<svg width="12" height="12" viewBox="0 0 10 10"><rect ${f} x="1.5" y="1.5" width="7" height="7" rx="1.5"/></svg>`;
+				case 'hexagon':
+					return `<svg width="12" height="12" viewBox="0 0 10 10"><polygon ${f} points="5,1 8.7,3 8.7,7 5,9 1.3,7 1.3,3"/></svg>`;
+				default:
+					return `<svg width="12" height="12" viewBox="0 0 10 10"><circle ${f} cx="5" cy="5" r="4"/></svg>`;
+			}
+		};
+
+		// All / None controls
+		const layerCtrl = ls.createDiv({ cls: 'llm-sb-layer-ctrl' });
+		const allTypesBtn  = layerCtrl.createEl('button', { cls: 'llm-graph-btn llm-graph-btn--xs', text: 'All' });
+		const noneTypesBtn = layerCtrl.createEl('button', { cls: 'llm-graph-btn llm-graph-btn--xs', text: 'None' });
+		const layerRowMap = new Map<string, HTMLElement>();
+
 		const maxL = Math.max(...A.layers.map(l=>l.count),1);
-		A.layers.forEach((l,i)=>{
-			const row = ls.createDiv({cls:'llm-sb-layer-row'});
-			row.createSpan({cls:'llm-sb-layer-num',text:String(i+1)});
-			const nm = row.createSpan({cls:'llm-sb-layer-name',text:l.name});
-			nm.style.color=l.color;
-			const track = row.createDiv({cls:'llm-sb-track'});
-			if (l.count>0) {
-				const fill=track.createDiv({cls:'llm-sb-fill'});
-				fill.style.cssText=`width:${Math.max(l.count/maxL*100,4)}%;background:${l.color}`;
-			} else track.createSpan({cls:'llm-sb-gap',text:'gap'});
-			const cnt=row.createSpan({cls:'llm-sb-layer-cnt',text:l.count?String(l.count):'—'});
-			cnt.style.color=l.count?l.color:'var(--text-faint)';
+		A.layers.forEach((l, i) => {
+			const typeName = l.name.toLowerCase();
+			const color    = l.color;
+			const shape    = NODE_SHAPES[typeName] ?? 'circle';
+			const isHidden = this.hiddenTypes.has(typeName);
+
+			const row = ls.createDiv({ cls: 'llm-sb-layer-row llm-sb-layer-clickable' });
+			if (isHidden) row.addClass('llm-sb-layer-row--off');
+			layerRowMap.set(typeName, row);
+
+			row.createSpan({ cls: 'llm-sb-layer-num', text: String(i + 1) });
+			row.innerHTML += shapeSVG(shape, color, isHidden);
+			const nm = row.createSpan({ cls: 'llm-sb-layer-name', text: l.name });
+			nm.style.color = isHidden ? 'var(--text-faint)' : color;
+			const track = row.createDiv({ cls: 'llm-sb-track' });
+			if (l.count > 0) {
+				const fill = track.createDiv({ cls: 'llm-sb-fill' });
+				fill.style.cssText = `width:${Math.max(l.count/maxL*100,4)}%;background:${isHidden ? 'var(--text-faint)' : color}`;
+			} else {
+				track.createSpan({ cls: 'llm-sb-gap', text: 'gap' });
+			}
+			const cnt = row.createSpan({ cls: 'llm-sb-layer-cnt', text: l.count ? String(l.count) : '—' });
+			cnt.style.color = (l.count && !isHidden) ? color : 'var(--text-faint)';
+
+			if (l.count > 0) {
+				row.addEventListener('click', () => {
+					if (this.hiddenTypes.has(typeName)) this.hiddenTypes.delete(typeName);
+					else this.hiddenTypes.add(typeName);
+					// Re-render sidebar to reflect state (simpler than patching SVG innerHTML)
+					this.buildSidebar(sidebar, A, adj);
+					this.applyVisibility(adj);
+					this.saveSettings();
+				});
+			}
+		});
+
+		allTypesBtn.addEventListener('click', () => {
+			this.hiddenTypes.clear();
+			this.buildSidebar(sidebar, A, adj);
+			this.applyVisibility(adj);
+			this.saveSettings();
+		});
+		noneTypesBtn.addEventListener('click', () => {
+			A.layers.forEach(l => { if (l.count > 0) this.hiddenTypes.add(l.name.toLowerCase()); });
+			this.buildSidebar(sidebar, A, adj);
+			this.applyVisibility(adj);
+			this.saveSettings();
 		});
 
 		// Edge types
