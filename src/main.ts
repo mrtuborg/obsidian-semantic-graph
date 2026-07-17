@@ -118,6 +118,8 @@ class SemanticGraphView extends ItemView {
 	private selNodeLabel: any = null;
 	private focusNodeFn: ((id: string) => void) | null = null;
 	private svgEl: SVGSVGElement | null = null;
+	// layer row references for toggle updates (no full sidebar rebuild needed)
+	private layerRowMap = new Map<string, HTMLElement>();
 
 	// adjacency for dim-on-select
 	private neighborSet: Set<string> = new Set();
@@ -677,7 +679,6 @@ class SemanticGraphView extends ItemView {
 
 	// ── 5. Sidebar ────────────────────────────────────────────────────
 	private buildSidebar(sidebar: HTMLElement, A: Analytics, adj: Map<string,Set<string>>) {
-		sidebar.empty(); // clear before rebuild (for toggle re-renders)
 		const section = (title: string) => {
 			const s = sidebar.createDiv({ cls:'llm-sb-section' });
 			s.createDiv({ cls:'llm-sb-title', text: title });
@@ -720,10 +721,9 @@ class SemanticGraphView extends ItemView {
 		// Epistemic layers — clickable to toggle type visibility
 		const ls = section('Epistemic Layers');
 
-		// Shape SVG helper (reused from old pills)
-		const shapeSVG = (shape: string, color: string, dim = false): string => {
-			const op = dim ? ' opacity="0.35"' : '';
-			const f = `fill="${color}"${op}`;
+		// Shape SVG helper
+		const shapeSVG = (shape: string, color: string): string => {
+			const f = `fill="${color}"`;
 			switch (shape) {
 				case 'diamond':
 					return `<svg width="12" height="12" viewBox="0 0 10 10"><rect ${f} x="1.5" y="1.5" width="7" height="7" rx="1" transform="rotate(45 5 5)"/></svg>`;
@@ -740,39 +740,41 @@ class SemanticGraphView extends ItemView {
 		const layerCtrl = ls.createDiv({ cls: 'llm-sb-layer-ctrl' });
 		const allTypesBtn  = layerCtrl.createEl('button', { cls: 'llm-graph-btn llm-graph-btn--xs', text: 'All' });
 		const noneTypesBtn = layerCtrl.createEl('button', { cls: 'llm-graph-btn llm-graph-btn--xs', text: 'None' });
-		const layerRowMap = new Map<string, HTMLElement>();
+
+		// Store row refs on instance so toggle handlers can update classes without full rebuild
+		this.layerRowMap.clear();
 
 		const maxL = Math.max(...A.layers.map(l=>l.count),1);
 		A.layers.forEach((l, i) => {
 			const typeName = l.name.toLowerCase();
 			const color    = l.color;
 			const shape    = NODE_SHAPES[typeName] ?? 'circle';
-			const isHidden = this.hiddenTypes.has(typeName);
 
-			const row = ls.createDiv({ cls: 'llm-sb-layer-row llm-sb-layer-clickable' });
-			if (isHidden) row.addClass('llm-sb-layer-row--off');
-			layerRowMap.set(typeName, row);
+			const row = ls.createDiv({ cls: 'llm-sb-layer-row' });
+			if (l.count > 0) row.addClass('llm-sb-layer-clickable');
+			if (this.hiddenTypes.has(typeName)) row.addClass('llm-sb-layer-row--off');
+			this.layerRowMap.set(typeName, row);
 
 			row.createSpan({ cls: 'llm-sb-layer-num', text: String(i + 1) });
-			row.innerHTML += shapeSVG(shape, color, isHidden);
-			const nm = row.createSpan({ cls: 'llm-sb-layer-name', text: l.name });
-			nm.style.color = isHidden ? 'var(--text-faint)' : color;
+			row.innerHTML += shapeSVG(shape, color);
+			row.createSpan({ cls: 'llm-sb-layer-name', text: l.name }).style.color = color;
 			const track = row.createDiv({ cls: 'llm-sb-track' });
 			if (l.count > 0) {
 				const fill = track.createDiv({ cls: 'llm-sb-fill' });
-				fill.style.cssText = `width:${Math.max(l.count/maxL*100,4)}%;background:${isHidden ? 'var(--text-faint)' : color}`;
+				fill.style.cssText = `width:${Math.max(l.count/maxL*100,4)}%;background:${color}`;
 			} else {
 				track.createSpan({ cls: 'llm-sb-gap', text: 'gap' });
 			}
-			const cnt = row.createSpan({ cls: 'llm-sb-layer-cnt', text: l.count ? String(l.count) : '—' });
-			cnt.style.color = (l.count && !isHidden) ? color : 'var(--text-faint)';
+			row.createSpan({ cls: 'llm-sb-layer-cnt', text: l.count ? String(l.count) : '—' })
+				.style.color = l.count ? color : 'var(--text-faint)';
 
 			if (l.count > 0) {
 				row.addEventListener('click', () => {
 					if (this.hiddenTypes.has(typeName)) this.hiddenTypes.delete(typeName);
 					else this.hiddenTypes.add(typeName);
-					// Re-render sidebar to reflect state (simpler than patching SVG innerHTML)
-					this.buildSidebar(sidebar, A, adj);
+					// Only toggle class — no full sidebar rebuild (keeps sliders + hub clicks alive)
+					this.layerRowMap.forEach((r, t) =>
+						r.toggleClass('llm-sb-layer-row--off', this.hiddenTypes.has(t)));
 					this.applyVisibility(adj);
 					this.saveSettings();
 				});
@@ -781,13 +783,14 @@ class SemanticGraphView extends ItemView {
 
 		allTypesBtn.addEventListener('click', () => {
 			this.hiddenTypes.clear();
-			this.buildSidebar(sidebar, A, adj);
+			this.layerRowMap.forEach(r => r.removeClass('llm-sb-layer-row--off'));
 			this.applyVisibility(adj);
 			this.saveSettings();
 		});
 		noneTypesBtn.addEventListener('click', () => {
 			A.layers.forEach(l => { if (l.count > 0) this.hiddenTypes.add(l.name.toLowerCase()); });
-			this.buildSidebar(sidebar, A, adj);
+			this.layerRowMap.forEach((r, t) =>
+				r.toggleClass('llm-sb-layer-row--off', this.hiddenTypes.has(t)));
 			this.applyVisibility(adj);
 			this.saveSettings();
 		});
