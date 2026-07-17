@@ -1,4 +1,4 @@
-import { Plugin, ItemView, WorkspaceLeaf, setIcon } from 'obsidian';
+import { Plugin, ItemView, WorkspaceLeaf, TFile, setIcon } from 'obsidian';
 import { select } from 'd3-selection';
 import {
 	forceSimulation, forceLink, forceManyBody,
@@ -11,7 +11,84 @@ import { drag } from 'd3-drag';
 
 const VIEW_TYPE = 'llm-wiki-semantic-graph';
 
-// Tableau10 — professional data viz palette, designed by color scientists
+// ─── BM25 search ─────────────────────────────────────────────────────────────
+const STOPWORDS = new Set([
+	'the','a','an','and','or','in','is','it','of','to','for','on','with','as',
+	'at','by','from','be','was','were','been','that','this','are','have','has',
+	'had','not','but','can','all','if','they','their','more','will','would',
+	'could','should','also','just','about','when','then','than','into','over',
+	'use','used','using','new','one','two','may','how','what','its','which',
+]);
+
+function tokenize(text: string): string[] {
+	return text.toLowerCase()
+		.replace(/```[\s\S]*?```/g, ' ')   // drop code blocks
+		.replace(/\[\[([^\]]+)\]\]/g, '$1') // unwrap wikilinks
+		.replace(/[^a-z0-9\s]/g, ' ')
+		.split(/\s+/)
+		.filter(t => t.length > 2 && !STOPWORDS.has(t));
+}
+
+function cosineSim(a: number[], b: number[]): number {
+	let dot = 0, na = 0, nb = 0;
+	const len = Math.min(a.length, b.length);
+	for (let i = 0; i < len; i++) { dot += a[i]*b[i]; na += a[i]*a[i]; nb += b[i]*b[i]; }
+	const denom = Math.sqrt(na) * Math.sqrt(nb);
+	return denom > 0 ? dot / denom : 0;
+}
+
+class BM25Index {
+	private tf   = new Map<string, Map<string, number>>(); // docId → term → freq
+	private df   = new Map<string, number>();               // term → #docs
+	private dl   = new Map<string, number>();               // docId → length
+	private avgdl = 1;
+	private N    = 0;
+	private k1   = 1.5;
+	private b    = 0.75;
+
+	add(docId: string, text: string) {
+		const terms = tokenize(text);
+		const freq  = new Map<string, number>();
+		for (const t of terms) freq.set(t, (freq.get(t) ?? 0) + 1);
+		this.tf.set(docId, freq);
+		this.dl.set(docId, terms.length);
+		for (const t of freq.keys()) this.df.set(t, (this.df.get(t) ?? 0) + 1);
+		this.N++;
+	}
+
+	finalize() {
+		const total = [...this.dl.values()].reduce((a, b) => a + b, 0);
+		this.avgdl = this.N > 0 ? total / this.N : 1;
+	}
+
+	score(docId: string, queryTerms: string[]): number {
+		const freq = this.tf.get(docId);
+		if (!freq) return 0;
+		const dl = this.dl.get(docId) ?? 1;
+		let s = 0;
+		for (const t of queryTerms) {
+			const tf = freq.get(t) ?? 0;
+			if (tf === 0) continue;
+			const df  = this.df.get(t) ?? 0;
+			const idf = Math.log((this.N - df + 0.5) / (df + 0.5) + 1);
+			s += idf * (tf * (this.k1 + 1)) / (tf + this.k1 * (1 - this.b + this.b * dl / this.avgdl));
+		}
+		return s;
+	}
+
+	/** Top-K doc IDs sorted by BM25 score descending */
+	topK(queryTerms: string[], k = 30, minScore = 0.5): string[] {
+		const scores: [string, number][] = [];
+		for (const docId of this.tf.keys()) {
+			const sc = this.score(docId, queryTerms);
+			if (sc >= minScore) scores.push([docId, sc]);
+		}
+		scores.sort((a, b) => b[1] - a[1]);
+		return scores.slice(0, k).map(([id]) => id);
+	}
+}
+
+
 const NODE_COLORS: Record<string, string> = {
 	axiom:     '#4E79A7',  // steel blue      — invariants
 	rule:      '#4E79A7',  // steel blue      — invariants
@@ -50,7 +127,11 @@ const EXCLUDED_PATHS = [
 	'wiki/templates/','wiki/graph/','wiki/compiled/',
 	'wiki/updates/','wiki/Meta/','pipeline/','schema/','ontology/','domains/','tools/','docs/',
 ];
-const EDGE_RE = /\*\*(\w+)\*\*\s*→\s*\[\[([^\]|]+)/g;
+
+// Graph file pattern — compiled graph lives in wiki/graph/<timestamp>-graph.md
+const GRAPH_FILE_RE = /^wiki\/graph\/\d{8}T\d{6}Z-graph\.md$/;
+// Edge table row in compiled graph: "| source | SrcType→TgtType | target | label |"
+const GRAPH_EDGE_RE = /^\|\s*([^|]+?)\s*\|\s*[A-Za-z]+→[A-Za-z]+\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|/;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface WikiNode extends SimulationNodeDatum {
@@ -82,6 +163,8 @@ interface GraphSettings {
 	labelSize:      number; // base font size in SVG units
 	searchQuery:    string;
 	selectedDomain: string | null;
+	embeddingEndpoint: string;
+	embeddingModel:    string;
 }
 const DEFAULT_SETTINGS: GraphSettings = {
 	showNodeLabels: true,
@@ -96,6 +179,8 @@ const DEFAULT_SETTINGS: GraphSettings = {
 	labelSize:      10,
 	searchQuery:    '',
 	selectedDomain: null,
+	embeddingEndpoint: 'http://localhost:11434',
+	embeddingModel:    'nomic-embed-text',
 };
 
 class SemanticGraphView extends ItemView {
@@ -117,6 +202,14 @@ class SemanticGraphView extends ItemView {
 	private searchQuery    = '';
 	private selectedDomain: string | null = null;
 	private _labelsUserSet = false; // true once user explicitly toggles label button
+
+	// semantic search state
+	private embeddingEndpoint = 'http://localhost:11434';
+	private embeddingModel    = 'nomic-embed-text';
+	private bm25Index:  BM25Index | null = null;
+	private embeddings: Map<string, number[]> | null = null;
+	private semanticIds     = new Set<string>(); // last semantic result
+	private semSearchTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// physics state
 	private linkDist    = 60;
@@ -170,6 +263,8 @@ class SemanticGraphView extends ItemView {
 		this.labelSize      = s.labelSize   ?? 10;
 		this.searchQuery    = s.searchQuery;
 		this.selectedDomain = s.selectedDomain ?? null;
+		this.embeddingEndpoint = s.embeddingEndpoint ?? 'http://localhost:11434';
+		this.embeddingModel    = s.embeddingModel    ?? 'nomic-embed-text';
 	}
 
 	private saveSettings() {
@@ -186,6 +281,8 @@ class SemanticGraphView extends ItemView {
 			labelSize:      this.labelSize,
 			searchQuery:    this.searchQuery,
 			selectedDomain: this.selectedDomain,
+			embeddingEndpoint: this.embeddingEndpoint,
+			embeddingModel:    this.embeddingModel,
 		};
 		this.plugin.saveData(s);
 	}
@@ -198,6 +295,9 @@ class SemanticGraphView extends ItemView {
 		await this.loadSettings();
 		await this.buildGraph();
 		this.render();
+		// Build search indices in background — don't block render
+		this.buildSearchIndex();
+		this.loadEmbeddings();
 		// Auto-refresh only for wiki/ files — ignore journal, activities, etc.
 		const isWikiFile = (f: { path: string }) =>
 			f.path.startsWith('wiki/') && !EXCLUDED_PATHS.some(ex => f.path.includes(ex));
@@ -249,27 +349,59 @@ class SemanticGraphView extends ItemView {
 		}
 	}
 
-	// ── 1. Parse vault ────────────────────────────────────────────────
+	// ── 1. Read compiled graph file ───────────────────────────────────
 	async buildGraph() {
+		// Find the latest compiled graph file: wiki/graph/<timestamp>-graph.md
+		const graphFiles = this.app.vault.getMarkdownFiles()
+			.filter(f => GRAPH_FILE_RE.test(f.path))
+			.sort((a, b) => b.basename.localeCompare(a.basename)); // newest first
+
+		if (graphFiles.length === 0) {
+			// Fallback: no compiled graph found
+			this.nodes = [];
+			this.edges = [];
+			this.analytics = this.computeAnalytics();
+			return;
+		}
+
+		const graphFile = graphFiles[0];
+		console.log(`[llm-wiki-graph] reading compiled graph: ${graphFile.path}`);
+		const content   = await this.app.vault.cachedRead(graphFile);
+		const lines     = content.split('\n');
+
+		// Phase 1: collect node metadata from wiki pages (type, domain, title)
+		// We still need frontmatter — but only for display, not for edge extraction.
 		const nodeMap = new Map<string, WikiNode>();
-		const rawEdges: { src: string; tgt: string; label: string }[] = [];
-		const files = this.app.vault.getMarkdownFiles().filter(f =>
+		const wikiFiles = this.app.vault.getMarkdownFiles().filter(f =>
 			f.path.startsWith('wiki/') && !EXCLUDED_PATHS.some(ex => f.path.includes(ex)));
 
-		for (const file of files) {
+		for (const file of wikiFiles) {
 			const fm = this.app.metadataCache.getFileCache(file)?.frontmatter ?? {};
 			nodeMap.set(file.basename, {
-				id: file.basename,
+				id:     file.basename,
 				title:  (fm['title']  ?? file.basename) as string,
-				type:   ((fm['type'] ?? 'unknown') as string).toLowerCase(),
+				type:   ((fm['type']  ?? 'unknown') as string).toLowerCase(),
 				domain: (fm['domain'] ?? '') as string,
 			});
-			const content = await this.app.vault.cachedRead(file);
-			let m: RegExpExecArray | null;
-			EDGE_RE.lastIndex = 0;
-			while ((m = EDGE_RE.exec(content)) !== null)
-				rawEdges.push({ src: file.basename, tgt: m[2].trim(), label: m[1] });
 		}
+
+		// Phase 2: parse edge table from compiled graph
+		// Table rows after "## Edge List" header
+		const rawEdges: { src: string; tgt: string; label: string }[] = [];
+		let inEdgeTable = false;
+		for (const line of lines) {
+			if (line.startsWith('## Edge List')) { inEdgeTable = true; continue; }
+			if (inEdgeTable && line.startsWith('## ')) { inEdgeTable = false; continue; }
+			if (!inEdgeTable) continue;
+			const m = GRAPH_EDGE_RE.exec(line);
+			if (!m) continue;
+			const [, src, tgt, label] = m;
+			if (src === 'Source') continue; // header row
+			rawEdges.push({ src: src.trim(), tgt: tgt.trim(), label: label.trim() });
+		}
+
+		// Only include nodes that appear in the graph (have at least one edge)
+		// plus keep isolated typed nodes for orphan display
 		this.nodes = Array.from(nodeMap.values());
 		this.edges = rawEdges
 			.filter(e => nodeMap.has(e.src) && nodeMap.has(e.tgt))
@@ -277,7 +409,58 @@ class SemanticGraphView extends ItemView {
 		this.analytics = this.computeAnalytics();
 	}
 
-	// ── 2. Analytics ──────────────────────────────────────────────────
+	// ── 1b. BM25 search index ─────────────────────────────────────────
+	private async buildSearchIndex() {
+		const idx = new BM25Index();
+		const wikiFiles = this.app.vault.getMarkdownFiles().filter(f =>
+			f.path.startsWith('wiki/') && !EXCLUDED_PATHS.some(ex => f.path.includes(ex)));
+		await Promise.all(wikiFiles.map(async (file) => {
+			const raw  = await this.app.vault.cachedRead(file);
+			const body = raw.replace(/^---[\s\S]*?---\n?/, ''); // strip frontmatter
+			idx.add(file.basename, file.basename + ' ' + body);
+		}));
+		idx.finalize();
+		this.bm25Index = idx;
+	}
+
+	// ── 1c. Load pre-computed embeddings ─────────────────────────────
+	private async loadEmbeddings() {
+		const embFile = this.app.vault.getAbstractFileByPath('wiki/search/embeddings.json');
+		if (!(embFile instanceof TFile)) return;
+		try {
+			const raw  = await this.app.vault.read(embFile);
+			const data: Record<string, number[]> = JSON.parse(raw);
+			this.embeddings = new Map(Object.entries(data));
+			console.log(`[llm-wiki-graph] loaded ${this.embeddings.size} embeddings`);
+		} catch (e) {
+			console.warn('[llm-wiki-graph] could not load embeddings:', e);
+		}
+	}
+
+	// ── 1d. Semantic search via Ollama ───────────────────────────────
+	private async runSemanticSearch(query: string): Promise<Set<string>> {
+		if (!this.embeddings || !query.trim()) return new Set();
+		let queryVec: number[];
+		try {
+			const resp = await fetch(`${this.embeddingEndpoint}/api/embeddings`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ model: this.embeddingModel, prompt: query }),
+			});
+			if (!resp.ok) return new Set();
+			queryVec = (await resp.json()).embedding as number[];
+		} catch { return new Set(); }
+
+		const scores: [string, number][] = [];
+		for (const [id, vec] of this.embeddings) {
+			scores.push([id, cosineSim(queryVec, vec)]);
+		}
+		scores.sort((a, b) => b[1] - a[1]);
+		// Keep nodes above 0.5 similarity, max 25
+		return new Set(scores.slice(0, 25).filter(([, s]) => s >= 0.5).map(([id]) => id));
+	}
+
+
 	private computeAnalytics(): Analytics {
 		const degreeOf = new Map<string, number>();
 		for (const e of this.edges) {
@@ -342,11 +525,30 @@ class SemanticGraphView extends ItemView {
 		const neighbors = sel ? (adj.get(sel) ?? new Set()) : null;
 		const dom = this.selectedDomain;
 
+		// When a domain is selected, compute which nodes are neighbors of domain nodes
+		// (cross-domain nodes that have at least one edge into the selected domain)
+		let domainNeighbors: Set<string> | null = null;
+		if (dom) {
+			domainNeighbors = new Set<string>();
+			// need access to nodes — iterate adj for domain nodes
+			this.selNodeEl.each((d: WikiNode) => {
+				if (d.domain === dom) {
+					for (const nbId of (adj.get(d.id) ?? [])) {
+						domainNeighbors!.add(nbId);
+					}
+				}
+			});
+		}
+
 		// node opacity / display
 		this.selNodeEl.style('opacity', (d: WikiNode) => {
 			if (this.hiddenTypes.has(d.type)) return '0';
 			if (!this.showOrphans && (adj.get(d.id)?.size ?? 0) === 0) return '0';
-			if (dom && d.domain !== dom) return '0.07';
+			if (dom) {
+				if (d.domain === dom) return '1';                  // domain node: full
+				if (domainNeighbors!.has(d.id)) return '0.35';    // cross-domain neighbor: dim
+				return '0';                                         // unrelated: hidden
+			}
 			if (!sel) return '1';
 			return d.id === sel || neighbors!.has(d.id) ? '1' : '0.07';
 		}).style('display', (d: WikiNode) => {
@@ -359,7 +561,12 @@ class SemanticGraphView extends ItemView {
 		const edgeOpacity = (e: any) => {
 			const s = (e.source as WikiNode), t = (e.target as WikiNode);
 			if (this.hiddenTypes.has(s.type) || this.hiddenTypes.has(t.type)) return '0';
-			if (dom && s.domain !== dom && t.domain !== dom) return '0.04';
+			if (dom) {
+				const sInDom = s.domain === dom, tInDom = t.domain === dom;
+				if (sInDom && tInDom) return '0.8';   // intra-domain edge: bright
+				if (sInDom || tInDom) return '0.35';  // cross-domain edge: medium
+				return '0';                             // unrelated: hidden
+			}
 			if (!sel) return '0.55';
 			return (s.id===sel || t.id===sel) ? '0.9' : '0.04';
 		};
@@ -400,8 +607,11 @@ class SemanticGraphView extends ItemView {
 		const searchBar = container.createDiv({ cls: 'llm-graph-searchbar' });
 		const searchInput = searchBar.createEl('input', {
 			cls: 'llm-graph-search',
-			attr: { type: 'text', placeholder: 'Search nodes… (title, type, domain)' }
+			attr: { type: 'text', placeholder: 'Search nodes… (content + semantic)' }
 		});
+		// Semantic search status indicator
+		const semIndicator = searchBar.createSpan({ cls: 'llm-graph-sem-indicator' });
+		semIndicator.style.display = 'none';
 		// Clear button
 		const searchClear = searchBar.createEl('button', { cls: 'llm-graph-search-clear', text: '×' });
 		searchClear.style.display = 'none';
@@ -412,32 +622,75 @@ class SemanticGraphView extends ItemView {
 			searchClear.style.display = 'flex';
 		}
 
+		const renderVisibility = (bm25Ids: Set<string>, semIds: Set<string>) => {
+			if (!this.selNodeEl) return;
+			this.selNodeEl
+				.style('opacity', (d: WikiNode) => {
+					if (bm25Ids.has(d.id)) return '1';
+					if (semIds.has(d.id))  return '0.5';
+					return '0.06';
+				})
+				.style('pointer-events', (d: WikiNode) =>
+					bm25Ids.has(d.id) || semIds.has(d.id) ? null : 'none');
+			this.selEdgeLine?.style('opacity', (d: any) => {
+				const s = (d.source as WikiNode).id, t = (d.target as WikiNode).id;
+				if (bm25Ids.has(s) || bm25Ids.has(t)) return '0.6';
+				if (semIds.has(s)  || semIds.has(t))  return '0.25';
+				return '0.03';
+			});
+			this.selEdgeLabel?.style('opacity', (d: any) => {
+				const s = (d.source as WikiNode).id, t = (d.target as WikiNode).id;
+				if (bm25Ids.has(s) || bm25Ids.has(t)) return '1';
+				if (semIds.has(s)  || semIds.has(t))  return '0.5';
+				return '0';
+			});
+		};
+
 		const applySearch = () => {
 			const q = this.searchQuery.toLowerCase().trim();
 			searchClear.style.display = q ? 'flex' : 'none';
 			if (!this.selNodeEl) return;
 			if (!q) {
+				this.semanticIds.clear();
+				semIndicator.style.display = 'none';
 				this.selNodeEl.style('opacity', null).style('pointer-events', null);
 				this.selEdgeLine?.style('opacity', null);
 				this.selEdgeLabel?.style('opacity', null);
 				return;
 			}
-			const matchIds = new Set(
-				this.nodes
-					.filter(n =>
-						n.title.toLowerCase().includes(q) ||
-						n.type.toLowerCase().includes(q)  ||
-						n.domain.toLowerCase().includes(q)
-					)
-					.map(n => n.id)
-			);
-			this.selNodeEl
-				.style('opacity',        (d: WikiNode) => matchIds.has(d.id) ? '1' : '0.07')
-				.style('pointer-events', (d: WikiNode) => matchIds.has(d.id) ? null  : 'none');
-			this.selEdgeLine?.style('opacity', (d: any) =>
-				matchIds.has((d.source as WikiNode).id) || matchIds.has((d.target as WikiNode).id) ? '0.6' : '0.05');
-			this.selEdgeLabel?.style('opacity', (d: any) =>
-				matchIds.has((d.source as WikiNode).id) || matchIds.has((d.target as WikiNode).id) ? '1' : '0');
+
+			// ── Immediate: BM25 + exact metadata match ──────────────────
+			const queryTerms = tokenize(q);
+			const bm25Ids = new Set<string>();
+			for (const n of this.nodes) {
+				let score = 0;
+				if (n.title.toLowerCase().includes(q))  score += 10;
+				if (n.type.toLowerCase().includes(q))   score += 5;
+				if (n.domain.toLowerCase().includes(q)) score += 5;
+				if (this.bm25Index && queryTerms.length > 0)
+					score += this.bm25Index.score(n.id, queryTerms);
+				if (score > 0) bm25Ids.add(n.id);
+			}
+			renderVisibility(bm25Ids, this.semanticIds);
+
+			// ── Debounced: semantic embedding search (400 ms) ────────────
+			if (this.semSearchTimer) clearTimeout(this.semSearchTimer);
+			if (this.embeddings) {
+				semIndicator.textContent = '⟳ semantic…';
+				semIndicator.style.display = 'inline';
+				this.semSearchTimer = setTimeout(async () => {
+					const semIds = await this.runSemanticSearch(q);
+					this.semanticIds = semIds;
+					const combined = new Set([...bm25Ids, ...semIds]);
+					semIndicator.textContent = combined.size > 0
+						? `BM25: ${bm25Ids.size}  ~: ${semIds.size}`
+						: '';
+					semIndicator.style.display = combined.size > 0 ? 'inline' : 'none';
+					renderVisibility(bm25Ids, semIds);
+				}, 400);
+			} else {
+				semIndicator.style.display = 'none';
+			}
 		};
 
 		searchInput.addEventListener('input', () => { this.searchQuery = searchInput.value; applySearch(); this.saveSettings(); });
@@ -956,7 +1209,8 @@ class SemanticGraphView extends ItemView {
 			if (this.selectedDomain === d.name) row.addClass('llm-sb-domain-row--active');
 			row.createSpan({ cls: 'llm-sb-bar-name', text: d.name });
 			const track = row.createDiv({ cls: 'llm-sb-track' });
-			track.createDiv({ cls: 'llm-sb-fill llm-sb-fill--teal', style: `width:${d.count/maxD*100}%` });
+			const dfill = track.createDiv({ cls: 'llm-sb-fill' });
+			dfill.style.cssText = `width:${Math.max(d.count/maxD*100,4)}%;background:${domainColor(d.name)}`;
 			row.createSpan({ cls: 'llm-sb-bar-cnt', text: String(d.count) });
 			row.addEventListener('click', () => {
 				if (this.selectedDomain === d.name) {
