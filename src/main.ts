@@ -451,8 +451,9 @@ class SemanticGraphView extends ItemView {
 
 		const BASE_LABEL_PX  = 11;   // node label size at zoom=1
 		const BASE_ELABEL_PX = 9;    // edge label size at zoom=1
-		const BASE_STROKE    = 1.5;  // edge stroke-width at zoom=1
-		const BASE_ARROW     = 6;    // marker size at zoom=1
+		const BASE_STROKE    = 1.0;  // edge stroke-width at zoom=1
+		const BASE_ARROW_W   = 8;    // marker userSpace width at zoom=1
+		const BASE_ARROW_H   = 6;    // marker userSpace height at zoom=1
 		const BASE_NODE      = 1;    // node shape scale at zoom=1
 
 		this.zoomBehavior = zoom<SVGSVGElement, unknown>()
@@ -471,9 +472,9 @@ class SemanticGraphView extends ItemView {
 				// Counter-scale node shapes (scale the wrapper <g>)
 				g.selectAll<SVGGElement, unknown>('.llm-node-shape-wrapper')
 					.attr('transform', `scale(${BASE_NODE / k})`);
-				// Counter-scale arrow marker
-				svgEl.querySelector('#llm-arrow')?.setAttribute('markerWidth',  String(BASE_ARROW / k));
-				svgEl.querySelector('#llm-arrow')?.setAttribute('markerHeight', String(BASE_ARROW / k));
+				// Counter-scale arrow marker (userSpaceOnUse — independent of stroke-width)
+				svgEl.querySelector('#llm-arrow')?.setAttribute('markerWidth',  String(BASE_ARROW_W / k));
+				svgEl.querySelector('#llm-arrow')?.setAttribute('markerHeight', String(BASE_ARROW_H / k));
 			});
 		svg.call(this.zoomBehavior);
 
@@ -499,11 +500,11 @@ class SemanticGraphView extends ItemView {
 
 		// Arrow marker
 		svg.append('defs').append('marker').attr('id','llm-arrow')
-			.attr('viewBox','0 -4 8 8').attr('refX',20).attr('refY',0)
-			.attr('markerWidth',6).attr('markerHeight',6)
-			.attr('markerUnits','strokeWidth')
+			.attr('viewBox','0 -3 6 6').attr('refX',10).attr('refY',0)
+			.attr('markerWidth', BASE_ARROW_W).attr('markerHeight', BASE_ARROW_H)
+			.attr('markerUnits','userSpaceOnUse')
 			.attr('orient','auto')
-			.append('path').attr('d','M0,-4L8,0L0,4').attr('fill','var(--text-faint)');
+			.append('path').attr('d','M0,-3L6,0L0,3').attr('fill','var(--text-faint)');
 
 		// Resolve node refs
 		const nodeMap   = new Map(this.nodes.map(n=>[n.id,n]));
@@ -584,22 +585,22 @@ class SemanticGraphView extends ItemView {
 				const sw = g.append('g').attr('class', 'llm-node-shape-wrapper');
 				if (shape === 'diamond') {
 					sw.append('rect').attr('class', cls)
-						.attr('width', 14).attr('height', 14)
-						.attr('x', -7).attr('y', -7)
+						.attr('width', 11).attr('height', 11)
+						.attr('x', -5.5).attr('y', -5.5)
 						.attr('transform', 'rotate(45)').attr('rx', 1.5)
 						.attr('fill', color);
 				} else if (shape === 'square') {
 					sw.append('rect').attr('class', cls)
-						.attr('width', 17).attr('height', 17)
-						.attr('x', -8.5).attr('y', -8.5).attr('rx', 2.5)
+						.attr('width', 13).attr('height', 13)
+						.attr('x', -6.5).attr('y', -6.5).attr('rx', 2)
 						.attr('fill', color);
 				} else if (shape === 'hexagon') {
 					sw.append('polygon').attr('class', cls)
-						.attr('points', '0,-10 8.7,-5 8.7,5 0,10 -8.7,5 -8.7,-5')
+						.attr('points', '0,-8 6.9,-4 6.9,4 0,8 -6.9,4 -6.9,-4')
 						.attr('fill', color);
 				} else {
 					sw.append('circle').attr('class', cls)
-						.attr('r', 9).attr('fill', color);
+						.attr('r', 7).attr('fill', color);
 				}
 			});
 
