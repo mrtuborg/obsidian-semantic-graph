@@ -560,9 +560,15 @@ class SemanticGraphView extends ItemView {
 				.attr('class','llm-graph-edge')
 				.attr('stroke-width', 1.2)
 				.attr('stroke', (d: any) => {
+					// Use source domain, fallback to target domain, fallback to neutral
+					const domain = (d.source as WikiNode).domain || (d.target as WikiNode).domain;
+					return domain ? domainColor(domain) : '#888';
+				})
+				.attr('stroke-opacity', (d: any) => {
+					// Same-domain edges: more visible; cross-domain: dimmer
 					const src = (d.source as WikiNode).domain;
 					const tgt = (d.target as WikiNode).domain;
-					return (src && src === tgt) ? domainColor(src) : 'var(--graph-line)';
+					return (src && tgt && src === tgt) ? '0.7' : '0.3';
 				})
 				.attr('marker-end','url(#llm-arrow)');
 			this.selEdgeLine = edgeLine;
