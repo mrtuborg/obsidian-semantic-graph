@@ -103,6 +103,9 @@ class SemanticGraphView extends ItemView {
 	// zoom state — persisted across refreshes
 	private savedTransform: { k: number; x: number; y: number } | null = null;
 
+	// pending rAF handle — cancelled before each rebuild
+	private pendingRaf: number | null = null;
+
 	// live D3 selections
 	private selNodeEl:    any = null;
 	private selEdgeLine:  any = null;
@@ -302,6 +305,10 @@ class SemanticGraphView extends ItemView {
 
 	// ── 4. Render ─────────────────────────────────────────────────────
 	render() {
+		// Stop old simulation and cancel any pending rAF before rebuilding DOM
+		this.sim?.stop();
+		if (this.pendingRaf !== null) { cancelAnimationFrame(this.pendingRaf); this.pendingRaf = null; }
+
 		const container = this.containerEl.children[1] as HTMLElement;
 		container.empty();
 		container.addClass('llm-graph-container');
@@ -506,7 +513,8 @@ class SemanticGraphView extends ItemView {
 			target: nodeMap.get(e.target as string)!,
 		})).filter(e=>e.source&&e.target);
 
-		requestAnimationFrame(() => {
+		this.pendingRaf = requestAnimationFrame(() => {
+			this.pendingRaf = null;
 			const W = svgEl.clientWidth  || 900;
 			const H = svgEl.clientHeight || 700;
 
