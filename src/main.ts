@@ -147,7 +147,8 @@ interface Analytics {
 	hubs: { id: string; deg: number; type: string }[];
 	domains: { name: string; count: number }[];
 	degreeOf: Map<string, number>;
-	intraDomainOut: Map<string, number>;  // out-degree within same domain
+	intraDomainOut: Map<string, number>;
+	othersTypeSet: Set<string>; // types not in epistemic model → "Others" layer
 }
 
 // ─── View ─────────────────────────────────────────────────────────────────────
@@ -577,24 +578,23 @@ class SemanticGraphView extends ItemView {
 		for (const nd of this.nodes) typeCounts.set(nd.type,(typeCounts.get(nd.type)??0)+1);
 
 		const knownTypes = new Set(LAYER_ORDER.map(n => n.toLowerCase()));
-		// Auto-palette for extra types not in LAYER_ORDER
-		const EXTRA_PALETTE = ['#9b59b6','#1abc9c','#e67e22','#3498db','#e91e63','#00bcd4','#cddc39','#ff5722'];
-		let extraIdx = 0;
-		const extraLayers: {name:string;color:string;count:number}[] = [];
+		// Count all nodes whose type is not in the epistemic model → "Others"
+		let othersCount = 0;
+		const othersTypeSet = new Set<string>(); // actual type strings that belong to Others
 		for (const [type, count] of typeCounts) {
-			if (!knownTypes.has(type) && type !== 'unknown') {
-				const color = NODE_COLORS[type] ?? EXTRA_PALETTE[extraIdx++ % EXTRA_PALETTE.length];
-				extraLayers.push({ name: type.charAt(0).toUpperCase() + type.slice(1), color, count });
+			if (!knownTypes.has(type)) {
+				othersCount += count;
+				othersTypeSet.add(type);
 			}
 		}
-		extraLayers.sort((a,b) => b.count - a.count);
 
 		const layers = [
 			...LAYER_ORDER.map(name=>({
 				name, color: NODE_COLORS[name.toLowerCase()]??'#888',
 				count: typeCounts.get(name.toLowerCase())??0,
 			})),
-			...extraLayers,
+			// "Others" — nodes outside the epistemic model, need Maintain attention
+			...(othersCount > 0 ? [{ name: 'Others', color: '#888888', count: othersCount }] : []),
 		];
 
 		const edgeCnt = new Map<string,number>();
@@ -609,7 +609,7 @@ class SemanticGraphView extends ItemView {
 		for (const nd of this.nodes) if(nd.domain) domainCnt.set(nd.domain,(domainCnt.get(nd.domain)??0)+1);
 		const domains = [...domainCnt.entries()].sort((a,b)=>b[1]-a[1]).map(([name,count])=>({name,count}));
 
-		return {n,m,density,avgDeg,orphans:orphanIds.length,orphanIds,layers,edgeTypes,hubs,domains,degreeOf,intraDomainOut};
+		return {n,m,density,avgDeg,orphans:orphanIds.length,orphanIds,layers,edgeTypes,hubs,domains,degreeOf,intraDomainOut,othersTypeSet};
 	}
 
 	// ── 3. Dim helpers ────────────────────────────────────────────────
@@ -693,21 +693,20 @@ class SemanticGraphView extends ItemView {
 		// ── Domain + type filter ──────────────────────────────────────
 		const domFilt = this.selectedDomains;
 		const hidden  = this.hiddenTypes;
+		const othersHidden = hidden.has('others');
 		const renderNodes = this.nodes.filter(n =>
 			(domFilt.size === 0 || domFilt.has(n.domain)) &&
-			!hidden.has(n.type)
+			!hidden.has(n.type) &&
+			!(othersHidden && A.othersTypeSet.has(n.type))
 		);
 		const renderNodeIds = new Set(renderNodes.map(n => n.id));
 		const renderEdges = this.edges.filter(e =>
 			renderNodeIds.has(e.source as string) && renderNodeIds.has(e.target as string)
 		);
 
-		// Extra-type color map (types not in LAYER_ORDER, assigned from analytics)
+		// Others color map — gray for all non-model types
 		this.extraColorMap.clear();
-		for (const l of A.layers) {
-			const t = l.name.toLowerCase();
-			if (!NODE_COLORS[t]) this.extraColorMap.set(t, l.color);
-		}
+		for (const t of A.othersTypeSet) this.extraColorMap.set(t, '#888888');
 
 		// ── Auto-scale physics to graph size ───────────────────────────
 		const N = renderNodes.length;
@@ -1792,16 +1791,20 @@ class SemanticGraphView extends ItemView {
 		A.layers.forEach((l, i) => {
 			const typeName = l.name.toLowerCase();
 			const color    = l.color;
-			const shape    = NODE_SHAPES[typeName] ?? 'circle';
+			const isOthers = typeName === 'others';
+			const shape    = isOthers ? 'circle' : (NODE_SHAPES[typeName] ?? 'circle');
 
 			const row = ls.createDiv({ cls: 'llm-sb-layer-row' });
 			if (l.count > 0) row.addClass('llm-sb-layer-clickable');
 			if (this.hiddenTypes.has(typeName)) row.addClass('llm-sb-layer-row--off');
+			if (isOthers) row.addClass('llm-sb-layer-row--others');
 			this.layerRowMap.set(typeName, row);
 
-			row.createSpan({ cls: 'llm-sb-layer-num', text: String(i + 1) });
+			row.createSpan({ cls: 'llm-sb-layer-num', text: isOthers ? '?' : String(i + 1) });
 			row.innerHTML += shapeSVG(shape, color);
-			row.createSpan({ cls: 'llm-sb-layer-name', text: l.name }).style.color = color;
+			const nameSpan = row.createSpan({ cls: 'llm-sb-layer-name', text: l.name });
+			nameSpan.style.color = color;
+			if (isOthers) nameSpan.title = 'Types outside epistemic model — needs Maintain';
 			const track = row.createDiv({ cls: 'llm-sb-track' });
 			if (l.count > 0) {
 				const fill = track.createDiv({ cls: 'llm-sb-fill' });
