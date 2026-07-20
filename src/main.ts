@@ -213,6 +213,7 @@ class SemanticGraphView extends ItemView {
 	private searchResultsData: { bm25: {id:string;score:number}[]; sem: {id:string;score:number}[] } | null = null;
 	private semSidebarEl: HTMLElement | null = null;
 	private hiddenTypes    = new Set<string>();
+	private extraColorMap  = new Map<string, string>(); // extra types beyond LAYER_ORDER
 	private showOrphans    = false; // orphan nodes hidden by default
 	private selectedId: string | null = null;
 	private searchQuery    = '';
@@ -574,10 +575,27 @@ class SemanticGraphView extends ItemView {
 
 		const typeCounts = new Map<string,number>();
 		for (const nd of this.nodes) typeCounts.set(nd.type,(typeCounts.get(nd.type)??0)+1);
-		const layers = LAYER_ORDER.map(name=>({
-			name, color: NODE_COLORS[name.toLowerCase()]??'#888',
-			count: typeCounts.get(name.toLowerCase())??0,
-		}));
+
+		const knownTypes = new Set(LAYER_ORDER.map(n => n.toLowerCase()));
+		// Auto-palette for extra types not in LAYER_ORDER
+		const EXTRA_PALETTE = ['#9b59b6','#1abc9c','#e67e22','#3498db','#e91e63','#00bcd4','#cddc39','#ff5722'];
+		let extraIdx = 0;
+		const extraLayers: {name:string;color:string;count:number}[] = [];
+		for (const [type, count] of typeCounts) {
+			if (!knownTypes.has(type) && type !== 'unknown') {
+				const color = NODE_COLORS[type] ?? EXTRA_PALETTE[extraIdx++ % EXTRA_PALETTE.length];
+				extraLayers.push({ name: type.charAt(0).toUpperCase() + type.slice(1), color, count });
+			}
+		}
+		extraLayers.sort((a,b) => b.count - a.count);
+
+		const layers = [
+			...LAYER_ORDER.map(name=>({
+				name, color: NODE_COLORS[name.toLowerCase()]??'#888',
+				count: typeCounts.get(name.toLowerCase())??0,
+			})),
+			...extraLayers,
+		];
 
 		const edgeCnt = new Map<string,number>();
 		for (const e of this.edges) edgeCnt.set(e.label,(edgeCnt.get(e.label)??0)+1);
@@ -606,6 +624,10 @@ class SemanticGraphView extends ItemView {
 		return adj;
 	}
 
+	private nodeTypeColor(type: string): string {
+		return NODE_COLORS[type] ?? this.extraColorMap.get(type) ?? '#BAB0AC';
+	}
+
 	/** Recolor existing 2D nodes in-place — no simulation restart, no zoom change */
 	private recolorNodes() {
 		if (!this.selNodeEl) return;
@@ -616,7 +638,7 @@ class SemanticGraphView extends ItemView {
 			if (colorMode_ === 'semantic' && clusterMap_.has(d.id)) {
 				color = DOMAIN_PALETTE[clusterMap_.get(d.id)! % DOMAIN_PALETTE.length];
 			} else {
-				color = NODE_COLORS[d.type] ?? '#BAB0AC';
+				color = this.nodeTypeColor(d.type);
 			}
 			select(this as SVGGElement).selectAll<SVGElement, unknown>('.llm-graph-node-shape')
 				.attr('fill', color);
@@ -679,6 +701,13 @@ class SemanticGraphView extends ItemView {
 		const renderEdges = this.edges.filter(e =>
 			renderNodeIds.has(e.source as string) && renderNodeIds.has(e.target as string)
 		);
+
+		// Extra-type color map (types not in LAYER_ORDER, assigned from analytics)
+		this.extraColorMap.clear();
+		for (const l of A.layers) {
+			const t = l.name.toLowerCase();
+			if (!NODE_COLORS[t]) this.extraColorMap.set(t, l.color);
+		}
 
 		// ── Auto-scale physics to graph size ───────────────────────────
 		const N = renderNodes.length;
@@ -871,7 +900,7 @@ class SemanticGraphView extends ItemView {
 			const nodeColor = (nd: WikiNode): string => {
 				if (this.colorMode === 'semantic' && this.clusterMap.has(nd.id))
 					return DOMAIN_PALETTE[this.clusterMap.get(nd.id)! % DOMAIN_PALETTE.length];
-				return NODE_COLORS[nd.type] ?? '#BAB0AC';
+				return this.nodeTypeColor(nd.type);
 			};
 			const renderNodes3D = this.selectedDomains.size > 0
 				? this.nodes.filter(n => this.selectedDomains.has(n.domain))
@@ -920,7 +949,7 @@ class SemanticGraphView extends ItemView {
 					nodes3D.forEach(nd => {
 						nd.color = colorMode_ === 'semantic' && clusterMap_.has(nd.id)
 							? DOMAIN_PALETTE[clusterMap_.get(nd.id)! % DOMAIN_PALETTE.length]
-							: NODE_COLORS[nd.type] ?? '#BAB0AC';
+							: this.nodeTypeColor(nd.type);
 						colorMap.set(nd.id, nd.color);
 					});
 					this.graph3D.updateColors(colorMap);
@@ -1157,7 +1186,7 @@ class SemanticGraphView extends ItemView {
 				if (colorMode_ === 'semantic' && clusterMap_.has(d.id)) {
 					color = DOMAIN_PALETTE[clusterMap_.get(d.id)! % DOMAIN_PALETTE.length];
 				} else {
-					color = NODE_COLORS[d.type] ?? '#BAB0AC';
+					color = this.nodeTypeColor(d.type);
 				}
 				const shape  = NODE_SHAPES[d.type]  ?? 'circle';
 				const cls    = 'llm-graph-node-shape';
@@ -1206,7 +1235,7 @@ class SemanticGraphView extends ItemView {
 					const neighbors = adj.get(d.id)??new Set();
 					tooltip.innerHTML =
 						`<strong>${d.title}</strong><br>`+
-						`<span class="llm-tp-type" style="color:${NODE_COLORS[d.type]??'#888'}">${d.type}</span>`+
+						`<span class="llm-tp-type" style="color:${this.nodeTypeColor(d.type)}">${d.type}</span>`+
 						(d.domain?`<br><em>${d.domain}</em>`:'')+
 						`<br><small>degree: ${deg} · neighbors: ${neighbors.size}</small>`+
 						`<br><small class="llm-tp-hint">click to select · click again to open</small>`;
