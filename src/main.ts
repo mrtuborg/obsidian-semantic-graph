@@ -693,7 +693,7 @@ class SemanticGraphView extends ItemView {
 		const nlBtn       = mkBtn('type',         'Nodes',     this.showNodeLabels);
 		const elBtn    = mkBtn('minus',        'Edges',     this.showEdgeLabels);
 		const arBtn    = mkBtn('arrow-right',  'Arrows',    this.showArrows);
-		const sbBtn    = mkBtn('bar-chart-2',  'Analytics');
+		const sbBtn    = mkBtn('bar-chart-2',  'Analytics', this.sidebarOpen);
 		toolbar.createSpan({ cls:'llm-graph-stats',
 			text:`${A.n} nodes · ${A.m} edges · density ${A.density}` });
 
@@ -706,6 +706,7 @@ class SemanticGraphView extends ItemView {
 		const svgEl  = layout.createSvg('svg', { cls: 'llm-graph-svg' });
 		this.svgEl   = svgEl;
 		const sidebar = layout.createDiv({ cls: 'llm-graph-sidebar' });
+		if (this.sidebarOpen) sidebar.addClass('llm-graph-sidebar--open');
 		this.buildSidebar(sidebar, A, adj);
 
 		// ── D3 setup ───────────────────────────────────────────────────
