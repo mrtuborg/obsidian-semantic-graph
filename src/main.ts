@@ -1235,8 +1235,7 @@ class SemanticGraphView extends ItemView {
 		if (!emb || emb.size === 0) {
 			const ns = section('Semantic Metrics');
 			ns.createDiv({ cls: 'llm-sb-muted', text: 'No embeddings found. Generate them below (requires Ollama running). Configure endpoint and model in plugin Settings.' });
-		}
-
+		} else {
 		// ── Cosine similarity helper ──────────────────────────────────
 		const cosSim = (a: number[], b: number[]) => {
 			let dot = 0, na = 0, nb = 0;
@@ -1309,7 +1308,6 @@ class SemanticGraphView extends ItemView {
 		const embIds  = nodes.filter(n => emb.has(n.id)).map(n => n.id);
 		const missing: { a: string; b: string; sim: number }[] = [];
 		const MISS_THRESH = 0.80;
-		// O(n²) but bounded — only compute if < 300 embedded nodes
 		if (embIds.length <= 300) {
 			for (let i = 0; i < embIds.length && missing.length < 200; i++) {
 				for (let j = i+1; j < embIds.length; j++) {
@@ -1352,24 +1350,24 @@ class SemanticGraphView extends ItemView {
 			lb.addEventListener('click', () => this.app.workspace.openLinkText(b, '', false));
 		}
 
-		// ── Cluster settings (visible when embeddings exist) ──────────
-		if (emb && emb.size > 0) {
-			const ks = section('Semantic Clusters');
-			const kRow = ks.createDiv({ cls: 'llm-sb-slider-row' });
-			kRow.createSpan({ cls: 'llm-sb-slider-lbl', text: 'k clusters' });
-			const kInput = kRow.createEl('input', { type: 'range' });
-			kInput.addClass('llm-sb-slider');
-			kInput.min = '2'; kInput.max = '20'; kInput.step = '1';
-			kInput.value = String(this.numClusters);
-			const kVal = kRow.createSpan({ cls: 'llm-sb-slider-val', text: String(this.numClusters) });
-			kInput.addEventListener('input', () => {
-				const k = +kInput.value;
-				kVal.textContent = String(k);
-				this.numClusters = k;
-				this.saveSettings();
-				if (this.colorMode === 'semantic') { this.computeClusters(k); this.render(); }
-			});
-		}
+		// ── Cluster settings ──────────────────────────────────────────
+		const ks = section('Semantic Clusters');
+		const kRow = ks.createDiv({ cls: 'llm-sb-slider-row' });
+		kRow.createSpan({ cls: 'llm-sb-slider-lbl', text: 'k clusters' });
+		const kInput = kRow.createEl('input', { type: 'range' });
+		kInput.addClass('llm-sb-slider');
+		kInput.min = '2'; kInput.max = '20'; kInput.step = '1';
+		kInput.value = String(this.numClusters);
+		const kVal = kRow.createSpan({ cls: 'llm-sb-slider-val', text: String(this.numClusters) });
+		kInput.addEventListener('input', () => {
+			const k = +kInput.value;
+			kVal.textContent = String(k);
+			this.numClusters = k;
+			this.saveSettings();
+			if (this.colorMode === 'semantic') { this.computeClusters(k); this.render(); }
+		});
+
+		} // end else (embeddings exist)
 
 		// ── Generate / Regenerate section (always visible) ────────────
 		const gs = section(emb && emb.size > 0 ? `Regenerate Embeddings (${emb.size} stored)` : 'Generate Embeddings');
