@@ -1,4 +1,5 @@
 import { Plugin, PluginSettingTab, Setting, ItemView, WorkspaceLeaf, TFile, setIcon } from 'obsidian';
+import { Graph3D, Node3D, Link3D } from './graph3d';
 import { select } from 'd3-selection';
 import {
 	forceSimulation, forceLink, forceManyBody,
@@ -170,6 +171,7 @@ interface GraphSettings {
 	embeddingModel:    string;
 	colorMode:         'type' | 'semantic';
 	numClusters:       number;
+	mode3D:            boolean;
 }
 const DEFAULT_SETTINGS: GraphSettings = {
 	showNodeLabels: true,
@@ -191,6 +193,7 @@ const DEFAULT_SETTINGS: GraphSettings = {
 	embeddingModel:    'nomic-embed-text',
 	colorMode:         'type',
 	numClusters:       6,
+	mode3D:            false,
 };
 
 class SemanticGraphView extends ItemView {
@@ -222,6 +225,8 @@ class SemanticGraphView extends ItemView {
 	private colorMode: 'type' | 'semantic' = 'type';
 	private numClusters = 6;
 	private clusterMap  = new Map<string, number>(); // nodeId → cluster index
+	private mode3D      = false;
+	private graph3D: Graph3D | null = null;
 	private bm25Index:  BM25Index | null = null;
 	private embeddings: Map<string, number[]> | null = null;
 	private semanticIds     = new Set<string>(); // last semantic result
@@ -288,6 +293,7 @@ class SemanticGraphView extends ItemView {
 		this.embeddingModel    = s.embeddingModel    ?? 'nomic-embed-text';
 		this.colorMode         = s.colorMode         ?? 'type';
 		this.numClusters       = s.numClusters       ?? 6;
+		this.mode3D            = s.mode3D            ?? false;
 	}
 
 	private saveSettings() {
@@ -311,6 +317,7 @@ class SemanticGraphView extends ItemView {
 			embeddingModel:    this.embeddingModel,
 			colorMode:         this.colorMode,
 			numClusters:       this.numClusters,
+			mode3D:            this.mode3D,
 		};
 		this.plugin.saveData(s);
 	}
@@ -814,6 +821,7 @@ class SemanticGraphView extends ItemView {
 		const arBtn    = mkBtn('arrow-right',  'Arrows',    this.showArrows);
 		const semBtn   = mkBtn('cpu',          'Semantic',  this.semSidebarOpen);
 		const clrBtn   = mkBtn('layers',       'Clusters',  this.colorMode === 'semantic');
+		const btn3D    = mkBtn('box',          '3D',        this.mode3D);
 		const sbBtn    = mkBtn('bar-chart-2',  'Analytics', this.sidebarOpen);
 		toolbar.createSpan({ cls:'llm-graph-stats',
 			text:`${A.n} nodes · ${A.m} edges · density ${A.density}` });
@@ -827,6 +835,97 @@ class SemanticGraphView extends ItemView {
 		const semSidebar = layout.createDiv({ cls: 'llm-graph-sem-sidebar' });
 		if (this.semSidebarOpen) semSidebar.addClass('llm-graph-sem-sidebar--open');
 		this.semSidebarEl = semSidebar;
+
+		// ── 3D mode: replace SVG with Three.js canvas ─────────────────
+		if (this.mode3D) {
+			const canvas3D = layout.createDiv({ cls: 'llm-graph-3d-canvas' });
+			const sidebar = layout.createDiv({ cls: 'llm-graph-sidebar' });
+			if (this.sidebarOpen) sidebar.addClass('llm-graph-sidebar--open');
+			this.buildSidebar(sidebar, A, adj);
+			this.buildSemanticSidebar(semSidebar);
+
+			// Dispose previous 3D instance
+			if (this.graph3D) { this.graph3D.dispose(); this.graph3D = null; }
+			const g3 = new Graph3D();
+			this.graph3D = g3;
+
+			const nodeColor = (nd: WikiNode): string => {
+				if (this.colorMode === 'semantic' && this.clusterMap.has(nd.id))
+					return DOMAIN_PALETTE[this.clusterMap.get(nd.id)! % DOMAIN_PALETTE.length];
+				return NODE_COLORS[nd.type] ?? '#BAB0AC';
+			};
+			const renderNodes3D = this.selectedDomains.size > 0
+				? this.nodes.filter(n => this.selectedDomains.has(n.domain))
+				: this.nodes;
+			const nodeIdSet3D = new Set(renderNodes3D.map(n => n.id));
+			const degMap = A.degreeOf;
+
+			const nodes3D: Node3D[] = renderNodes3D.map(nd => ({
+				id: nd.id, title: nd.title, type: nd.type, domain: nd.domain,
+				color: nodeColor(nd),
+				size: 1 + Math.log1p(degMap.get(nd.id) ?? 0) * 0.4,
+			}));
+			const links3D: Link3D[] = this.edges
+				.filter(e => {
+					const s = typeof e.source === 'string' ? e.source : (e.source as WikiNode).id;
+					const t = typeof e.target === 'string' ? e.target : (e.target as WikiNode).id;
+					return nodeIdSet3D.has(s) && nodeIdSet3D.has(t);
+				})
+				.map(e => ({
+					source: typeof e.source === 'string' ? e.source : (e.source as WikiNode).id,
+					target: typeof e.target === 'string' ? e.target : (e.target as WikiNode).id,
+				}));
+
+			// Wire 3D button for toggling mode
+			btn3D.addEventListener('click', () => {
+				this.mode3D = false;
+				this.saveSettings();
+				this.render();
+			});
+			// Wire clrBtn for cluster colors in 3D
+			clrBtn.addEventListener('click', () => {
+				if (this.colorMode === 'type') {
+					if (!this.embeddings || this.embeddings.size === 0) return;
+					this.colorMode = 'semantic'; this.computeClusters(this.numClusters);
+				} else { this.colorMode = 'type'; }
+				clrBtn.toggleClass('llm-graph-btn--active', this.colorMode === 'semantic');
+				this.saveSettings(); this.render();
+			});
+
+			requestAnimationFrame(() => {
+				g3.init(canvas3D, {
+					onNodeClick: (id) => this.app.workspace.openLinkText(id, '', false),
+					onClose: () => {},
+				});
+				g3.setData(nodes3D, links3D);
+			});
+
+			// Wire up the remaining toolbar buttons that still make sense in 3D
+			const resetBtn3D  = toolbar.querySelector('[aria-label="Reset zoom"]') as HTMLButtonElement | null;
+			const refreshBtn3D = toolbar.querySelector('[aria-label="Refresh"]') as HTMLButtonElement | null;
+			resetBtn3D?.addEventListener('click', () => {
+				g3['camera']?.position.set(0, 0, 600);
+				g3['controls']?.reset();
+			});
+			refreshBtn3D?.addEventListener('click', () => this.render());
+
+			// Sidebar and semantic buttons
+			sbBtn.addEventListener('click',()=>{
+				this.sidebarOpen=!this.sidebarOpen;
+				sbBtn.toggleClass('llm-graph-btn--active',this.sidebarOpen);
+				sidebar.toggleClass('llm-graph-sidebar--open',this.sidebarOpen);
+				this.saveSettings();
+			});
+			semBtn.addEventListener('click',()=>{
+				this.semSidebarOpen=!this.semSidebarOpen;
+				semBtn.toggleClass('llm-graph-btn--active',this.semSidebarOpen);
+				semSidebar.toggleClass('llm-graph-sem-sidebar--open',this.semSidebarOpen);
+				this.saveSettings();
+			});
+
+			return; // skip 2D D3 setup
+		}
+
 		const svgEl  = layout.createSvg('svg', { cls: 'llm-graph-svg' });
 		this.svgEl   = svgEl;
 		const sidebar = layout.createDiv({ cls: 'llm-graph-sidebar' });
@@ -1211,6 +1310,12 @@ class SemanticGraphView extends ItemView {
 				this.colorMode = 'type';
 			}
 			clrBtn.toggleClass('llm-graph-btn--active', this.colorMode === 'semantic');
+			this.saveSettings();
+			this.render();
+		});
+		btn3D.addEventListener('click', () => {
+			if (this.graph3D) { this.graph3D.dispose(); this.graph3D = null; }
+			this.mode3D = !this.mode3D;
 			this.saveSettings();
 			this.render();
 		});

@@ -2,6 +2,7 @@ import esbuild from 'esbuild';
 import process from 'process';
 
 const watch = process.argv.includes('--watch');
+const prod  = !watch;
 
 const context = await esbuild.context({
   entryPoints: ['src/main.ts'],
@@ -10,8 +11,9 @@ const context = await esbuild.context({
   format: 'cjs',
   target: 'es2018',
   logLevel: 'info',
-  sourcemap: 'inline',
+  sourcemap: prod ? false : 'inline',
   treeShaking: true,
+  minify: prod,
   outfile: 'main.js',
 });
 
