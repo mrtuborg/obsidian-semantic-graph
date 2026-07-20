@@ -155,6 +155,7 @@ interface GraphSettings {
 	showEdgeLabels: boolean;
 	showArrows:     boolean;
 	sidebarOpen:    boolean;
+	semSidebarOpen: boolean;
 	hiddenTypes:    string[];
 	linkDist:       number;
 	chargeStr:      number;
@@ -173,6 +174,7 @@ const DEFAULT_SETTINGS: GraphSettings = {
 	showEdgeLabels: true,
 	showArrows:     true,
 	sidebarOpen:    false,
+	semSidebarOpen: false,
 	hiddenTypes:    [],
 	linkDist:       60,
 	chargeStr:      120,
@@ -200,6 +202,7 @@ class SemanticGraphView extends ItemView {
 	private showEdgeLabels = true;
 	private showArrows     = true;
 	private sidebarOpen    = false;
+	private semSidebarOpen = false;
 	private hiddenTypes    = new Set<string>();
 	private showOrphans    = false; // orphan nodes hidden by default
 	private selectedId: string | null = null;
@@ -261,6 +264,7 @@ class SemanticGraphView extends ItemView {
 		this.showEdgeLabels = s.showEdgeLabels;
 		this.showArrows     = s.showArrows;
 		this.sidebarOpen    = s.sidebarOpen;
+		this.semSidebarOpen = s.semSidebarOpen ?? false;
 		this.hiddenTypes    = new Set(s.hiddenTypes);
 		this.linkDist       = s.linkDist;
 		this.chargeStr      = s.chargeStr;
@@ -281,6 +285,7 @@ class SemanticGraphView extends ItemView {
 			showEdgeLabels: this.showEdgeLabels,
 			showArrows:     this.showArrows,
 			sidebarOpen:    this.sidebarOpen,
+			semSidebarOpen: this.semSidebarOpen,
 			hiddenTypes:    [...this.hiddenTypes],
 			linkDist:       this.linkDist,
 			chargeStr:      this.chargeStr,
@@ -705,6 +710,7 @@ class SemanticGraphView extends ItemView {
 		const nlBtn       = mkBtn('type',         'Nodes',     this.showNodeLabels);
 		const elBtn    = mkBtn('minus',        'Edges',     this.showEdgeLabels);
 		const arBtn    = mkBtn('arrow-right',  'Arrows',    this.showArrows);
+		const semBtn   = mkBtn('cpu',          'Semantic',  this.semSidebarOpen);
 		const sbBtn    = mkBtn('bar-chart-2',  'Analytics', this.sidebarOpen);
 		toolbar.createSpan({ cls:'llm-graph-stats',
 			text:`${A.n} nodes · ${A.m} edges · density ${A.density}` });
@@ -713,13 +719,16 @@ class SemanticGraphView extends ItemView {
 		// placeholder adjacency (filled after rAF)
 		let adj = new Map<string,Set<string>>();
 
-		// ── Layout: SVG + sidebar ───────────────────────────────────────
+		// ── Layout: semantic sidebar (left) + SVG + analytics sidebar (right) ─
 		const layout = container.createDiv({ cls: 'llm-graph-layout' });
+		const semSidebar = layout.createDiv({ cls: 'llm-graph-sem-sidebar' });
+		if (this.semSidebarOpen) semSidebar.addClass('llm-graph-sem-sidebar--open');
 		const svgEl  = layout.createSvg('svg', { cls: 'llm-graph-svg' });
 		this.svgEl   = svgEl;
 		const sidebar = layout.createDiv({ cls: 'llm-graph-sidebar' });
 		if (this.sidebarOpen) sidebar.addClass('llm-graph-sidebar--open');
 		this.buildSidebar(sidebar, A, adj);
+		this.buildSemanticSidebar(semSidebar);
 
 		// ── D3 setup ───────────────────────────────────────────────────
 		const svg = select<SVGSVGElement, unknown>(svgEl);
@@ -1070,6 +1079,146 @@ class SemanticGraphView extends ItemView {
 			sidebar.toggleClass('llm-graph-sidebar--open',this.sidebarOpen);
 			this.saveSettings();
 		});
+		semBtn.addEventListener('click',()=>{
+			this.semSidebarOpen=!this.semSidebarOpen;
+			semBtn.toggleClass('llm-graph-btn--active',this.semSidebarOpen);
+			semSidebar.toggleClass('llm-graph-sem-sidebar--open',this.semSidebarOpen);
+			this.saveSettings();
+		});
+	}
+
+	// ── 5b. Semantic Sidebar ──────────────────────────────────────────
+	private buildSemanticSidebar(el: HTMLElement) {
+		el.empty();
+		const emb = this.embeddings;
+		const nodes = this.nodes;
+
+		const section = (title: string) => {
+			const s = el.createDiv({ cls: 'llm-sb-section' });
+			s.createDiv({ cls: 'llm-sb-title', text: title });
+			return s;
+		};
+
+		if (!emb || emb.size === 0) {
+			const ns = section('Semantic Metrics');
+			ns.createDiv({ cls: 'llm-sb-muted', text: 'No embeddings loaded. Use semantic search first to generate them.' });
+			return;
+		}
+
+		// ── Cosine similarity helper ──────────────────────────────────
+		const cosSim = (a: number[], b: number[]) => {
+			let dot = 0, na = 0, nb = 0;
+			for (let i = 0; i < a.length; i++) { dot += a[i]*b[i]; na += a[i]*a[i]; nb += b[i]*b[i]; }
+			return na === 0 || nb === 0 ? 0 : dot / (Math.sqrt(na) * Math.sqrt(nb));
+		};
+
+		// ── Compute per-domain centroids and cohesion ─────────────────
+		const domainNodes = new Map<string, WikiNode[]>();
+		for (const nd of nodes) {
+			if (!nd.domain || !emb.has(nd.id)) continue;
+			if (!domainNodes.has(nd.domain)) domainNodes.set(nd.domain, []);
+			domainNodes.get(nd.domain)!.push(nd);
+		}
+
+		type DomainStats = { cohesion: number; centroid: number[]; outliers: {id: string; sim: number}[] };
+		const domainStats = new Map<string, DomainStats>();
+		const dim = emb.values().next().value?.length ?? 0;
+
+		for (const [dom, dnodes] of domainNodes) {
+			if (dnodes.length < 2 || dim === 0) continue;
+			// centroid
+			const centroid = new Array<number>(dim).fill(0);
+			for (const nd of dnodes) {
+				const v = emb.get(nd.id)!;
+				for (let i = 0; i < dim; i++) centroid[i] += v[i] / dnodes.length;
+			}
+			// cohesion = mean cos-sim to centroid
+			const sims = dnodes.map(nd => ({ id: nd.id, sim: cosSim(emb.get(nd.id)!, centroid) }));
+			const cohesion = sims.reduce((s, x) => s + x.sim, 0) / sims.length;
+			// outliers = lowest sim to centroid
+			const outliers = [...sims].sort((a, b) => a.sim - b.sim).slice(0, 5);
+			domainStats.set(dom, { cohesion, centroid, outliers });
+		}
+
+		// ── Domain Cohesion section ───────────────────────────────────
+		const cs = section('Domain Cohesion');
+		cs.createDiv({ cls: 'llm-sb-muted', text: 'avg cos-sim to domain centroid (1.0 = perfectly focused)' });
+		const sorted = [...domainStats.entries()].sort((a,b) => b[1].cohesion - a[1].cohesion);
+		const maxCoh = Math.max(...sorted.map(([,v]) => v.cohesion), 0.01);
+		for (const [dom, { cohesion }] of sorted) {
+			const row = cs.createDiv({ cls: 'llm-sb-bar-row' });
+			row.createSpan({ cls: 'llm-sb-bar-name', text: dom });
+			const track = row.createDiv({ cls: 'llm-sb-track' });
+			const pct = Math.max(cohesion / maxCoh * 100, 2);
+			const hue = Math.round(cohesion * 120); // red→green
+			track.createDiv({ cls: 'llm-sb-fill', attr: { style: `width:${pct}%;background:hsl(${hue},60%,45%)` }});
+			row.createSpan({ cls: 'llm-sb-bar-cnt', text: cohesion.toFixed(2) });
+		}
+
+		// ── Semantic Outliers section ─────────────────────────────────
+		const os = section('Semantic Outliers');
+		os.createDiv({ cls: 'llm-sb-muted', text: 'nodes farthest from their domain centroid' });
+		for (const [dom, { outliers }] of sorted.slice(0, 8)) {
+			const domRow = os.createDiv({ cls: 'llm-sb-outlier-domain' });
+			domRow.createSpan({ cls: 'llm-sb-bar-name', text: dom });
+			for (const o of outliers.slice(0, 3)) {
+				const r = os.createDiv({ cls: 'llm-sb-outlier-row' });
+				r.createSpan({ cls: 'llm-sb-outlier-sim', text: o.sim.toFixed(2) });
+				const link = r.createEl('a', { cls: 'llm-sb-outlier-name', text: o.id.length > 28 ? o.id.slice(0,26)+'…' : o.id });
+				link.setAttribute('title', o.id);
+				link.addEventListener('click', () => this.app.workspace.openLinkText(o.id, '', false));
+			}
+		}
+
+		// ── Missing Links section ─────────────────────────────────────
+		const ms = section('Missing Links');
+		ms.createDiv({ cls: 'llm-sb-muted', text: 'similar nodes without an edge (cos-sim > 0.80)' });
+		const edgeSet = new Set(this.edges.map(e => `${e.source}|${e.target}`));
+		const embIds  = nodes.filter(n => emb.has(n.id)).map(n => n.id);
+		const missing: { a: string; b: string; sim: number }[] = [];
+		const MISS_THRESH = 0.80;
+		// O(n²) but bounded — only compute if < 300 embedded nodes
+		if (embIds.length <= 300) {
+			for (let i = 0; i < embIds.length && missing.length < 200; i++) {
+				for (let j = i+1; j < embIds.length; j++) {
+					if (edgeSet.has(`${embIds[i]}|${embIds[j]}`) || edgeSet.has(`${embIds[j]}|${embIds[i]}`)) continue;
+					const s = cosSim(emb.get(embIds[i])!, emb.get(embIds[j])!);
+					if (s >= MISS_THRESH) missing.push({ a: embIds[i], b: embIds[j], sim: s });
+				}
+			}
+			missing.sort((a,b) => b.sim - a.sim);
+		} else {
+			ms.createDiv({ cls: 'llm-sb-muted', text: `${embIds.length} nodes — too many for full scan (max 300)` });
+		}
+		for (const { a, b, sim } of missing.slice(0, 15)) {
+			const r = ms.createDiv({ cls: 'llm-sb-miss-row' });
+			r.createSpan({ cls: 'llm-sb-outlier-sim', text: sim.toFixed(2) });
+			const la = r.createEl('a', { cls: 'llm-sb-miss-name', text: a.length>18?a.slice(0,16)+'…':a });
+			la.addEventListener('click', () => this.app.workspace.openLinkText(a, '', false));
+			r.createSpan({ text: ' ↔ ' });
+			const lb = r.createEl('a', { cls: 'llm-sb-miss-name', text: b.length>18?b.slice(0,16)+'…':b });
+			lb.addEventListener('click', () => this.app.workspace.openLinkText(b, '', false));
+		}
+		if (missing.length === 0 && embIds.length <= 300) {
+			ms.createDiv({ cls: 'llm-sb-muted', text: 'None found above threshold.' });
+		}
+
+		// ── Near Duplicates section ───────────────────────────────────
+		const ds = section('Near Duplicates');
+		ds.createDiv({ cls: 'llm-sb-muted', text: 'cos-sim > 0.93 — potential redundancy' });
+		const dupes = missing.filter(x => x.sim >= 0.93);
+		if (dupes.length === 0) {
+			ds.createDiv({ cls: 'llm-sb-muted', text: 'None found.' });
+		}
+		for (const { a, b, sim } of dupes.slice(0, 10)) {
+			const r = ds.createDiv({ cls: 'llm-sb-miss-row' });
+			r.createSpan({ cls: 'llm-sb-outlier-sim', text: sim.toFixed(2) });
+			const la = r.createEl('a', { cls: 'llm-sb-miss-name', text: a.length>18?a.slice(0,16)+'…':a });
+			la.addEventListener('click', () => this.app.workspace.openLinkText(a, '', false));
+			r.createSpan({ text: ' ↔ ' });
+			const lb = r.createEl('a', { cls: 'llm-sb-miss-name', text: b.length>18?b.slice(0,16)+'…':b });
+			lb.addEventListener('click', () => this.app.workspace.openLinkText(b, '', false));
+		}
 	}
 
 	// ── 5. Sidebar ────────────────────────────────────────────────────
