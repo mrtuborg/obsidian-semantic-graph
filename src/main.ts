@@ -533,16 +533,18 @@ class SemanticGraphView extends ItemView {
 		if (!this.selNodeEl) return;
 		const sel  = this.selectedId;
 		const neighbors = sel ? (adj.get(sel) ?? new Set()) : null;
+		// When domain filter is active, always show all domain nodes (ignore orphan setting)
+		const domainActive = this.selectedDomains.size > 0;
 
 		// node opacity / display
 		this.selNodeEl.style('opacity', (d: WikiNode) => {
 			if (this.hiddenTypes.has(d.type)) return '0';
-			if (!this.showOrphans && (adj.get(d.id)?.size ?? 0) === 0) return '0';
+			if (!domainActive && !this.showOrphans && (adj.get(d.id)?.size ?? 0) === 0) return '0';
 			if (!sel) return '1';
 			return d.id === sel || neighbors!.has(d.id) ? '1' : '0.07';
 		}).style('display', (d: WikiNode) => {
 			if (this.hiddenTypes.has(d.type)) return 'none';
-			if (!this.showOrphans && (adj.get(d.id)?.size ?? 0) === 0) return 'none';
+			if (!domainActive && !this.showOrphans && (adj.get(d.id)?.size ?? 0) === 0) return 'none';
 			return null;
 		});
 
