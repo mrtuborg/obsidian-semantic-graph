@@ -325,7 +325,7 @@ class SemanticGraphView extends ItemView {
 
 	private captureZoom() {
 		if (this.svgEl && this.zoomBehavior) {
-			const t = this.zoomBehavior.transform(select(this.svgEl) as any);
+			const t = zoomTransform(this.svgEl);  // getter — NOT zoom.transform(sel) which is a setter!
 			this.savedTransform = { k: t.k, x: t.x, y: t.y };
 		}
 	}
