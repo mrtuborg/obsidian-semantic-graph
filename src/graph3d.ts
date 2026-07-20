@@ -5,11 +5,11 @@
 
 import {
 	WebGLRenderer, Scene, PerspectiveCamera,
-	SphereGeometry, MeshBasicMaterial, Mesh,
-	BufferGeometry, LineBasicMaterial, LineSegments,
+	SphereGeometry, BoxGeometry, OctahedronGeometry, CylinderGeometry,
+	MeshBasicMaterial, Mesh, BufferGeometry, LineBasicMaterial, LineSegments,
 	Float32BufferAttribute, Color, Raycaster, Vector2,
 	SpriteMaterial, Sprite, CanvasTexture,
-	Points, PointsMaterial, AdditiveBlending,
+	Points, PointsMaterial,
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
@@ -54,8 +54,7 @@ export class Graph3D {
 	private animId: number | null = null;
 	private raycaster = new Raycaster();
 	private mouse = new Vector2(-9999, -9999);
-	private nodeMeshes   = new Map<string, Mesh>();   // invisible spheres for raycasting
-	private glowSprites  = new Map<string, Sprite>();  // visible star glows
+	private nodeMeshes   = new Map<string, Mesh>();
 	private labelSprites = new Map<string, Sprite>();
 	private edgeGeo!: BufferGeometry;
 	private edgeMat!: LineBasicMaterial;
@@ -165,72 +164,59 @@ export class Graph3D {
 	}
 
 	/** Small sharp glow — professional star look, not cartoon */
-	private makeGlowCanvas(color: string, sz = 64): HTMLCanvasElement {
-		const c = document.createElement('canvas');
-		c.width = c.height = sz;
-		const ctx = c.getContext('2d')!;
-		const half = sz / 2;
-		const grad = ctx.createRadialGradient(half, half, 0, half, half, half);
-		grad.addColorStop(0.00, '#ffffff');        // sharp white core
-		grad.addColorStop(0.12, color);            // color ring, tight
-		grad.addColorStop(0.35, color + '44');     // very faint halo
-		grad.addColorStop(1.00, 'rgba(0,0,0,0)');
-		ctx.fillStyle = grad;
-		ctx.fillRect(0, 0, sz, sz);
-		return c;
+	/** Return a geometry matching the epistemic shape for this node type */
+	private makeShapeGeo(type: string): BufferGeometry {
+		switch (type) {
+			case 'axiom':
+			case 'rule':
+				return new OctahedronGeometry(1);        // diamond ♦
+			case 'process':
+			case 'decision':
+				return new BoxGeometry(1.6, 1.6, 1.6);   // cube □
+			case 'pattern':
+			case 'overview':
+			case 'synthesis':
+				return new CylinderGeometry(1, 1, 0.7, 6); // flat hexagonal prism ⬡
+			default:                                      // concept, entity, index
+				return new SphereGeometry(1, 12, 8);     // sphere ●
+		}
 	}
 
 	setData(nodes: Node3D[], links: Link3D[]) {
 		// Clear old objects
 		for (const m of this.nodeMeshes.values())  this.scene.remove(m);
-		for (const s of this.glowSprites.values())  this.scene.remove(s);
 		for (const s of this.labelSprites.values()) this.scene.remove(s);
 		this.nodeMeshes.clear();
-		this.glowSprites.clear();
 		this.labelSprites.clear();
 		this.nodeBaseSizes.clear();
 
 		this.simNodes = nodes;
 		this.simLinks = links;
 
-		// Invisible sphere for raycasting only
-		const hitGeo = new SphereGeometry(1, 6, 4);
-		const hitMat = new MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
+		const hitGeo = new SphereGeometry(1, 8, 6); // uniform sphere for raycasting
 
 		for (const nd of nodes) {
-			// Raycasting sphere (invisible)
-			const mesh = new Mesh(hitGeo.clone(), hitMat.clone());
-			const baseScale = nd.size * 5;
+			const mat  = new MeshBasicMaterial({ color: new Color(nd.color) });
+			const mesh = new Mesh(this.makeShapeGeo(nd.type), mat);
+			const baseScale = nd.size * 2.5;
 			this.nodeBaseSizes.set(nd.id, baseScale);
 			mesh.scale.setScalar(baseScale * this.currentNodeScale);
-			mesh.userData.id = nd.id;
+			mesh.userData.id   = nd.id;
+			mesh.userData.type = nd.type;
 			this.nodeMeshes.set(nd.id, mesh);
 			this.scene.add(mesh);
 
-			// Glow sprite — compact star, not oversized
-			const glowCanvas = this.makeGlowCanvas(nd.color, 64);
-			const glowTex = new CanvasTexture(glowCanvas);
-			const glowMat = new SpriteMaterial({
-				map: glowTex,
-				blending: AdditiveBlending,
-				transparent: true,
-				depthWrite: false,
-			});
-			const glow = new Sprite(glowMat);
-			const glowScale = baseScale * this.currentNodeScale * 3.5;
-			glow.scale.setScalar(glowScale);
-			glow.userData.id = nd.id;
-			this.glowSprites.set(nd.id, glow);
-			this.scene.add(glow);
+			// Invisible sphere child — reliable raycasting regardless of shape geometry
+			const hit = new Mesh(hitGeo.clone(), new MeshBasicMaterial({ visible: false }));
+			hit.userData.id = nd.id;
+			mesh.add(hit);
 
-			// Label — clean, readable
 			const label = this.makeLabel(nd.title, this.currentLabelSize);
 			label.userData.id = nd.id;
 			this.labelSprites.set(nd.id, label);
 			this.scene.add(label);
 		}
 
-		// Preallocate edge buffer
 		const buf = new Float32Array(links.length * 6);
 		this.edgeGeo.setAttribute('position', new Float32BufferAttribute(buf, 3));
 		this.edgeGeo.setDrawRange(0, 0);
@@ -273,10 +259,8 @@ export class Graph3D {
 	updateNodeScale(scale: number) {
 		this.currentNodeScale = scale;
 		for (const [id, mesh] of this.nodeMeshes) {
-			const base = this.nodeBaseSizes.get(id) ?? 5;
+			const base = this.nodeBaseSizes.get(id) ?? 2.5;
 			mesh.scale.setScalar(base * scale);
-			const glow = this.glowSprites.get(id);
-			if (glow) glow.scale.setScalar(base * scale * 3.5);
 		}
 	}
 
@@ -301,19 +285,14 @@ export class Graph3D {
 	}
 
 	private updatePositions() {
-		// Move raycasting spheres and glow sprites
 		for (const nd of this.simNodes) {
 			const mesh  = this.nodeMeshes.get(nd.id);
-			const glow  = this.glowSprites.get(nd.id);
 			const label = this.labelSprites.get(nd.id);
 			if (!mesh) continue;
 			const x = nd.x ?? 0, y = nd.y ?? 0, z = nd.z ?? 0;
 			mesh.position.set(x, y, z);
-			if (glow)  glow.position.set(x, y, z);
-			if (label) label.position.set(x + nd.size * 7, y + nd.size * 5, z);
+			if (label) label.position.set(x + nd.size * 6, y + nd.size * 4, z);
 		}
-
-		// Update constellation edge lines
 		const pos = this.edgeGeo.getAttribute('position') as any;
 		let i = 0;
 		for (const lk of this.simLinks) {
@@ -329,9 +308,10 @@ export class Graph3D {
 
 	highlight(ids: Set<string>, dimOpacity = 0.08) {
 		const any = ids.size > 0;
-		for (const [id, glow] of this.glowSprites) {
-			const mat = glow.material as SpriteMaterial;
-			mat.opacity = (!any || ids.has(id)) ? 1 : dimOpacity;
+		for (const [id, mesh] of this.nodeMeshes) {
+			const mat = mesh.material as MeshBasicMaterial;
+			mat.transparent = any && !ids.has(id);
+			mat.opacity = any && !ids.has(id) ? dimOpacity : 1;
 		}
 	}
 
@@ -366,12 +346,11 @@ export class Graph3D {
 	}
 
 	private onClick(ev: MouseEvent) {
-		// Raycasting — find hovered node
 		this.raycaster.setFromCamera(this.mouse, this.camera);
-		const meshArr = [...this.nodeMeshes.values()];
-		const hits = this.raycaster.intersectObjects(meshArr);
+		// recursive=true → hits invisible sphere children too
+		const hits = this.raycaster.intersectObjects([...this.nodeMeshes.values()], true);
 		if (hits.length > 0) {
-			const id = hits[0].object.userData.id as string;
+			const id = (hits[0].object.userData.id ?? hits[0].object.parent?.userData.id) as string;
 			if (id) this.opts.onNodeClick(id);
 		}
 	}
@@ -381,21 +360,23 @@ export class Graph3D {
 		this.controls.update();
 		this.frameCount++;
 
-		// Very slow star field drift — barely noticeable, adds depth
 		if (this.starField) this.starField.rotation.y += 0.000025;
 
-		// Hover detection — glow sprite brightens slightly
+		// Hover: scale up hovered node
 		this.raycaster.setFromCamera(this.mouse, this.camera);
-		const hits = this.raycaster.intersectObjects([...this.nodeMeshes.values()]);
-		const newHover = hits.length > 0 ? (hits[0].object.userData.id as string) : null;
+		const hits = this.raycaster.intersectObjects([...this.nodeMeshes.values()], true);
+		const rawId = hits.length > 0
+			? ((hits[0].object.userData.id ?? hits[0].object.parent?.userData.id) as string)
+			: null;
+		const newHover = rawId ?? null;
 		if (newHover !== this.hoveredId) {
 			if (this.hoveredId) {
-				const g = this.glowSprites.get(this.hoveredId);
-				if (g) { const base = this.nodeBaseSizes.get(this.hoveredId) ?? 5; g.scale.setScalar(base * this.currentNodeScale * 3.5); }
+				const m = this.nodeMeshes.get(this.hoveredId);
+				if (m) { const base = this.nodeBaseSizes.get(this.hoveredId) ?? 2.5; m.scale.setScalar(base * this.currentNodeScale); }
 			}
 			if (newHover) {
-				const g = this.glowSprites.get(newHover);
-				if (g) { const base = this.nodeBaseSizes.get(newHover) ?? 5; g.scale.setScalar(base * this.currentNodeScale * 5.5); }
+				const m = this.nodeMeshes.get(newHover);
+				if (m) { const base = this.nodeBaseSizes.get(newHover) ?? 2.5; m.scale.setScalar(base * this.currentNodeScale * 1.8); }
 			}
 			this.hoveredId = newHover;
 			this.renderer.domElement.style.cursor = newHover ? 'pointer' : 'default';
@@ -413,16 +394,11 @@ export class Graph3D {
 		this.renderer.setSize(W, H);
 	}
 
-	/** Update node star glow colors in-place */
+	/** Update node mesh colors in-place */
 	updateColors(colorMap: Map<string, string>) {
-		for (const [id, glow] of this.glowSprites) {
+		for (const [id, mesh] of this.nodeMeshes) {
 			const color = colorMap.get(id);
-			if (!color) continue;
-			const canvas = this.makeGlowCanvas(color, 128);
-			const mat = glow.material as SpriteMaterial;
-			mat.map?.dispose();
-			mat.map = new CanvasTexture(canvas);
-			mat.needsUpdate = true;
+			if (color) (mesh.material as MeshBasicMaterial).color.set(color);
 		}
 	}
 
@@ -447,12 +423,8 @@ export class Graph3D {
 		this.renderer.dispose();
 		this.renderer.domElement.remove();
 		for (const m of this.nodeMeshes.values()) {
-			(m.geometry as SphereGeometry).dispose();
+			m.geometry.dispose();
 			(m.material as MeshBasicMaterial).dispose();
-		}
-		for (const s of this.glowSprites.values()) {
-			(s.material as SpriteMaterial).map?.dispose();
-			(s.material as SpriteMaterial).dispose();
 		}
 		for (const s of this.labelSprites.values()) {
 			(s.material as SpriteMaterial).map?.dispose();
