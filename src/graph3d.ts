@@ -12,7 +12,7 @@ import {
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
-	forceSimulation, forceLink, forceManyBody, forceCenter, forceZ,
+	forceSimulation, forceLink, forceManyBody, forceCenter, forceRadial,
 } from 'd3-force-3d';
 
 export interface Node3D {
@@ -168,14 +168,16 @@ export class Graph3D {
 		this.runSim(this.physicsLinkDist, this.physicsCharge, this.physicsGravity);
 	}
 
-	private runSim(linkDist = 80, chargeStr = 120, gravityStr = 0.04) {
+	private runSim(linkDist = 80, chargeStr = 120, gravityStr = 0.08) {
+		// Target radius: nodes spread across a sphere of ~200 units
+		const r = Math.max(100, Math.sqrt(this.simNodes.length) * 20);
 		this.sim = forceSimulation(this.simNodes, 3)
 			.force('link', forceLink(this.simLinks)
 				.id((d: any) => d.id)
 				.distance(linkDist).strength(0.4))
 			.force('charge', forceManyBody().strength(-chargeStr))
 			.force('center', forceCenter(0, 0, 0))
-			.force('z', forceZ(0).strength(gravityStr))
+			.force('radial', (forceRadial as any)(r, 0, 0, 0).strength(gravityStr))
 			.alphaDecay(0.025);
 
 		this.sim.on('tick', () => this.updatePositions());
@@ -194,7 +196,7 @@ export class Graph3D {
 	}
 
 	updateGravity(val: number) {
-		this.sim?.force('z')?.strength(val);
+		this.sim?.force('radial')?.strength(val);
 		this.sim?.alpha(0.3).restart();
 	}
 
