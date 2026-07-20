@@ -631,14 +631,15 @@ class SemanticGraphView extends ItemView {
 	/** Recolor existing 2D nodes in-place — no simulation restart, no zoom change */
 	private recolorNodes() {
 		if (!this.selNodeEl) return;
-		const colorMode_ = this.colorMode;
-		const clusterMap_ = this.clusterMap;
+		const colorMode_     = this.colorMode;
+		const clusterMap_    = this.clusterMap;
+		const nodeTypeColor_ = (type: string) => this.nodeTypeColor(type);
 		this.selNodeEl.each(function(d: WikiNode) {
 			let color: string;
 			if (colorMode_ === 'semantic' && clusterMap_.has(d.id)) {
 				color = DOMAIN_PALETTE[clusterMap_.get(d.id)! % DOMAIN_PALETTE.length];
 			} else {
-				color = this.nodeTypeColor(d.type);
+				color = nodeTypeColor_(d.type);
 			}
 			select(this as SVGGElement).selectAll<SVGElement, unknown>('.llm-graph-node-shape')
 				.attr('fill', color);
@@ -1184,9 +1185,12 @@ class SemanticGraphView extends ItemView {
 			this.selNodeEl = nodeEl;
 
 			// capture for closures inside .each(function(){})
-		const colorMode_   = this.colorMode;
-		const clusterMap_  = this.clusterMap;
-		const nodeScale_   = this.nodeScale;
+		const colorMode_      = this.colorMode;
+		const clusterMap_     = this.clusterMap;
+		const nodeScale_      = this.nodeScale;
+		const nodeTypeColor_  = (type: string) => this.nodeTypeColor(type);
+		const intraDomainOut_ = A.intraDomainOut;
+		const degreeOf_       = A.degreeOf;
 
 		nodeEl.each(function(d) {
 				const g = select<SVGGElement, WikiNode>(this as SVGGElement);
@@ -1194,13 +1198,13 @@ class SemanticGraphView extends ItemView {
 				if (colorMode_ === 'semantic' && clusterMap_.has(d.id)) {
 					color = DOMAIN_PALETTE[clusterMap_.get(d.id)! % DOMAIN_PALETTE.length];
 				} else {
-					color = this.nodeTypeColor(d.type);
+					color = nodeTypeColor_(d.type);
 				}
 				const shape  = NODE_SHAPES[d.type]  ?? 'circle';
 				const cls    = 'llm-graph-node-shape';
 				// Size: prefer intra-domain children count; fallback to total degree
-				const intraDom = A.intraDomainOut.get(d.id) ?? 0;
-				const deg      = A.degreeOf.get(d.id) ?? 0;
+				const intraDom = intraDomainOut_.get(d.id) ?? 0;
+				const deg      = degreeOf_.get(d.id) ?? 0;
 				const sizeVal  = intraDom > 0 ? intraDom : deg;
 				// base scale from degree (log); nodeScale multiplier applied on top
 				const baseS = 1 + Math.log1p(sizeVal) * (intraDom > 0 ? 0.5 : 0.25);
