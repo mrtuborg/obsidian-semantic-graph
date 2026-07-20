@@ -516,8 +516,8 @@ class SemanticGraphView extends ItemView {
 	}
 
 	// ── 1d. Semantic search via Ollama ───────────────────────────────
-	private async runSemanticSearch(query: string): Promise<Set<string>> {
-		if (!this.embeddings || !query.trim()) return new Set();
+	private async runSemanticSearch(query: string): Promise<{ id: string; score: number }[]> {
+		if (!this.embeddings || !query.trim()) return [];
 		let queryVec: number[];
 		try {
 			const resp = await fetch(`${this.embeddingEndpoint}/api/embeddings`, {
@@ -525,17 +525,16 @@ class SemanticGraphView extends ItemView {
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ model: this.embeddingModel, prompt: query }),
 			});
-			if (!resp.ok) return new Set();
+			if (!resp.ok) return [];
 			queryVec = (await resp.json()).embedding as number[];
-		} catch { return new Set(); }
+		} catch { return []; }
 
 		const scores: [string, number][] = [];
 		for (const [id, vec] of this.embeddings) {
 			scores.push([id, cosineSim(queryVec, vec)]);
 		}
 		scores.sort((a, b) => b[1] - a[1]);
-		// Keep nodes above 0.5 similarity, max 25
-		return new Set(scores.slice(0, 25).filter(([, s]) => s >= 0.5).map(([id]) => id));
+		return scores.slice(0, 30).filter(([, s]) => s >= 0.45).map(([id, score]) => ({ id, score }));
 	}
 
 
@@ -671,20 +670,40 @@ class SemanticGraphView extends ItemView {
 		const searchBar = container.createDiv({ cls: 'llm-graph-searchbar' });
 		const searchInput = searchBar.createEl('input', {
 			cls: 'llm-graph-search',
-			attr: { type: 'text', placeholder: 'Search nodes… (content + semantic)' }
+			attr: { type: 'text', placeholder: 'Search nodes… (BM25 + semantic)' }
 		});
-		// Semantic search status indicator
 		const semIndicator = searchBar.createSpan({ cls: 'llm-graph-sem-indicator' });
 		semIndicator.style.display = 'none';
-		// Clear button
+		const findBtn = searchBar.createEl('button', { cls: 'llm-graph-btn llm-graph-find-btn', text: 'Find' });
 		const searchClear = searchBar.createEl('button', { cls: 'llm-graph-search-clear', text: '×' });
 		searchClear.style.display = 'none';
 
-		// Restore saved search query
+		// Results panel — scrollable, overlays graph from top
+		const resultsPanel = container.createDiv({ cls: 'llm-graph-results' });
+		resultsPanel.style.display = 'none';
+
+		// Restore saved search
 		if (this.searchQuery) {
 			searchInput.value = this.searchQuery;
 			searchClear.style.display = 'flex';
 		}
+
+		const nodeById = new Map<string, WikiNode>(this.nodes.map(n => [n.id, n]));
+
+		const clearSearch = () => {
+			searchInput.value = '';
+			this.searchQuery = '';
+			this.semanticIds.clear();
+			semIndicator.style.display = 'none';
+			searchClear.style.display = 'none';
+			resultsPanel.style.display = 'none';
+			resultsPanel.empty();
+			if (!this.selNodeEl) return;
+			this.selNodeEl.style('opacity', null).style('pointer-events', null);
+			this.selEdgeLine?.style('opacity', null);
+			this.selEdgeLabel?.style('opacity', null);
+			this.saveSettings();
+		};
 
 		const renderVisibility = (bm25Ids: Set<string>, semIds: Set<string>) => {
 			if (!this.selNodeEl) return;
@@ -710,20 +729,68 @@ class SemanticGraphView extends ItemView {
 			});
 		};
 
-		const applySearch = () => {
-			const q = this.searchQuery.toLowerCase().trim();
-			searchClear.style.display = q ? 'flex' : 'none';
-			if (!this.selNodeEl) return;
-			if (!q) {
-				this.semanticIds.clear();
-				semIndicator.style.display = 'none';
-				this.selNodeEl.style('opacity', null).style('pointer-events', null);
-				this.selEdgeLine?.style('opacity', null);
-				this.selEdgeLabel?.style('opacity', null);
+		const buildResultsPanel = (
+			bm25Hits: { id: string; score: number }[],
+			semHits:  { id: string; score: number }[]
+		) => {
+			resultsPanel.empty();
+			const all = new Map<string, { bm25: number; sem: number }>();
+			for (const { id, score } of bm25Hits) all.set(id, { bm25: score, sem: 0 });
+			for (const { id, score } of semHits) {
+				const ex = all.get(id) ?? { bm25: 0, sem: 0 };
+				all.set(id, { ...ex, sem: score });
+			}
+			if (all.size === 0) {
+				resultsPanel.createDiv({ cls: 'llm-res-empty', text: 'No results found.' });
+				resultsPanel.style.display = 'flex';
 				return;
 			}
+			// Sort: BM25 hits first (exact), then semantic-only
+			const sorted = [...all.entries()].sort((a, b) => {
+				const da = a[1], db = b[1];
+				const sa = da.bm25 > 0 ? da.bm25 * 2 + da.sem : da.sem;
+				const sb = db.bm25 > 0 ? db.bm25 * 2 + db.sem : db.sem;
+				return sb - sa;
+			});
+			const header = resultsPanel.createDiv({ cls: 'llm-res-header' });
+			header.createSpan({ text: `${sorted.length} results` });
+			if (semHits.length > 0) header.createSpan({ cls: 'llm-res-sem-tag', text: '~ semantic' });
+			for (const [id, { bm25, sem }] of sorted) {
+				const nd = nodeById.get(id);
+				if (!nd) continue;
+				const row = resultsPanel.createDiv({ cls: 'llm-res-row' });
+				if (bm25 > 0) row.addClass('llm-res-row--bm25');
+				else          row.addClass('llm-res-row--sem');
+				const badge = row.createSpan({ cls: 'llm-res-score' });
+				badge.textContent = sem > 0 ? sem.toFixed(2) : '—';
+				badge.title = `BM25: ${bm25.toFixed(1)}  semantic: ${sem.toFixed(2)}`;
+				const domTag = row.createSpan({ cls: 'llm-res-domain', text: nd.domain || nd.type });
+				domTag.style.background = nd.domain ? domainColor(nd.domain) + '33' : '';
+				domTag.style.color      = nd.domain ? domainColor(nd.domain) : '';
+				const link = row.createEl('a', { cls: 'llm-res-title', text: nd.title });
+				link.addEventListener('click', () => {
+					this.app.workspace.openLinkText(id, '', false);
+					// pan graph to node
+					const simNd = nd as any;
+					if (simNd.x != null && simNd.y != null && this.zoomBehavior && this.svgEl) {
+						const { width: W, height: H } = this.svgEl.getBoundingClientRect();
+						const t = zoomIdentity.translate(W/2 - simNd.x, H/2 - simNd.y);
+						select<SVGSVGElement, unknown>(this.svgEl).transition().duration(400)
+							.call(this.zoomBehavior.transform, t);
+					}
+				});
+			}
+			resultsPanel.style.display = 'flex';
+		};
 
-			// ── Immediate: BM25 + exact metadata match ──────────────────
+		// BM25 highlights on input (instant, no results panel)
+		searchInput.addEventListener('input', () => {
+			this.searchQuery = searchInput.value;
+			this.saveSettings();
+			const q = this.searchQuery.toLowerCase().trim();
+			searchClear.style.display = q ? 'flex' : 'none';
+			if (!q) { clearSearch(); return; }
+			// instant BM25 highlight only
 			const queryTerms = tokenize(q);
 			const bm25Ids = new Set<string>();
 			for (const n of this.nodes) {
@@ -731,34 +798,56 @@ class SemanticGraphView extends ItemView {
 				if (n.title.toLowerCase().includes(q))  score += 10;
 				if (n.type.toLowerCase().includes(q))   score += 5;
 				if (n.domain.toLowerCase().includes(q)) score += 5;
-				if (this.bm25Index && queryTerms.length > 0)
-					score += this.bm25Index.score(n.id, queryTerms);
+				if (this.bm25Index && queryTerms.length > 0) score += this.bm25Index.score(n.id, queryTerms);
 				if (score > 0) bm25Ids.add(n.id);
 			}
 			renderVisibility(bm25Ids, this.semanticIds);
+		});
 
-			// ── Debounced: semantic embedding search (400 ms) ────────────
-			if (this.semSearchTimer) clearTimeout(this.semSearchTimer);
-			if (this.embeddings) {
-				semIndicator.textContent = '⟳ semantic…';
-				semIndicator.style.display = 'inline';
-				this.semSearchTimer = setTimeout(async () => {
-					const semIds = await this.runSemanticSearch(q);
-					this.semanticIds = semIds;
-					const combined = new Set([...bm25Ids, ...semIds]);
-					semIndicator.textContent = combined.size > 0
-						? `BM25: ${bm25Ids.size}  ~: ${semIds.size}`
-						: '';
-					semIndicator.style.display = combined.size > 0 ? 'inline' : 'none';
-					renderVisibility(bm25Ids, semIds);
-				}, 400);
-			} else {
-				semIndicator.style.display = 'none';
+		// Enter key → trigger Find
+		searchInput.addEventListener('keydown', (e: KeyboardEvent) => {
+			if (e.key === 'Enter') findBtn.click();
+		});
+
+		// Find button — BM25 + semantic + results panel
+		findBtn.addEventListener('click', async () => {
+			const q = this.searchQuery.trim();
+			if (!q) { clearSearch(); return; }
+			findBtn.disabled = true;
+			findBtn.textContent = '…';
+			semIndicator.textContent = '⟳ searching…';
+			semIndicator.style.display = 'inline';
+
+			const ql = q.toLowerCase();
+			const queryTerms = tokenize(ql);
+			const bm25Hits: { id: string; score: number }[] = [];
+			for (const n of this.nodes) {
+				let score = 0;
+				if (n.title.toLowerCase().includes(ql))  score += 10;
+				if (n.type.toLowerCase().includes(ql))   score += 5;
+				if (n.domain.toLowerCase().includes(ql)) score += 5;
+				if (this.bm25Index && queryTerms.length > 0) score += this.bm25Index.score(n.id, queryTerms);
+				if (score > 0) bm25Hits.push({ id: n.id, score });
 			}
-		};
 
-		searchInput.addEventListener('input', () => { this.searchQuery = searchInput.value; applySearch(); this.saveSettings(); });
-		searchClear.addEventListener('click', () => { searchInput.value = ''; this.searchQuery = ''; applySearch(); searchInput.focus(); this.saveSettings(); });
+			const semHits = await this.runSemanticSearch(q);
+			const bm25Ids = new Set(bm25Hits.map(r => r.id));
+			const semIds  = new Set(semHits.map(r => r.id));
+			this.semanticIds = semIds;
+
+			renderVisibility(bm25Ids, semIds);
+			buildResultsPanel(bm25Hits, semHits);
+
+			const total = new Set([...bm25Ids, ...semIds]).size;
+			semIndicator.textContent = total > 0
+				? `BM25: ${bm25Ids.size}  ~: ${semIds.size}`
+				: 'no results';
+			semIndicator.style.display = 'inline';
+			findBtn.disabled = false;
+			findBtn.textContent = 'Find';
+		});
+
+		searchClear.addEventListener('click', () => { clearSearch(); searchInput.focus(); });
 
 		const mkBtn = (icon: string, label: string, active = false) => {
 			const b = toolbar.createEl('button', { cls: 'llm-graph-btn' });
