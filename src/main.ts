@@ -896,12 +896,39 @@ class SemanticGraphView extends ItemView {
 				g3.init(canvas3D, {
 					onNodeClick: (id) => this.app.workspace.openLinkText(id, '', false),
 					onClose: () => {},
+					linkDist:    this.linkDist,
+					chargeStr:   this.chargeStr,
+					gravityStr:  this.gravityStr,
+					nodeScale:   this.nodeScale,
+					edgeWidth:   this.edgeWidth,
+					labelSize:   this.labelSize,
+					labelFadeAt: this.labelFadeAt,
 				});
 				g3.setData(nodes3D, links3D);
 			});
 
-			// Wire up the remaining toolbar buttons that still make sense in 3D
-			const resetBtn3D  = toolbar.querySelector('[aria-label="Reset zoom"]') as HTMLButtonElement | null;
+			// Wire sliders for 3D mode
+			sidebar.querySelectorAll<HTMLInputElement>('[data-physics]').forEach(input => {
+				input.addEventListener('input', () => {
+					const val = +input.value;
+					const key = input.dataset.physics!;
+					const isFloat = key === 'gravityStr' || key === 'labelFadeAt' || key === 'nodeScale' || key === 'edgeWidth';
+					const lbl = input.nextElementSibling as HTMLElement;
+					if (lbl) lbl.textContent = isFloat ? val.toFixed(2) : String(val);
+
+					if (key === 'linkDist')    { this.linkDist = val;    g3.updateLinkDist(val); }
+					else if (key === 'chargeStr')   { this.chargeStr = val;   g3.updateCharge(val); }
+					else if (key === 'gravityStr')  { this.gravityStr = val;  g3.updateGravity(val); }
+					else if (key === 'nodeScale')   { this.nodeScale = val;   g3.updateNodeScale(val); }
+					else if (key === 'edgeWidth')   { this.edgeWidth = val;   g3.updateEdgeWidth(val); }
+					else if (key === 'labelSize')   { this.labelSize = val;   g3.updateLabelSize(val); }
+					else if (key === 'labelFadeAt') { this.labelFadeAt = val; g3.updateLabelFade(val); }
+					this.saveSettings();
+				});
+			});
+
+			// Wire toolbar buttons
+			const resetBtn3D   = toolbar.querySelector('[aria-label="Reset zoom"]') as HTMLButtonElement | null;
 			const refreshBtn3D = toolbar.querySelector('[aria-label="Refresh"]') as HTMLButtonElement | null;
 			resetBtn3D?.addEventListener('click', () => {
 				g3['camera']?.position.set(0, 0, 600);
@@ -909,7 +936,7 @@ class SemanticGraphView extends ItemView {
 			});
 			refreshBtn3D?.addEventListener('click', () => this.render());
 
-			// Sidebar and semantic buttons
+			// Sidebar buttons
 			sbBtn.addEventListener('click',()=>{
 				this.sidebarOpen=!this.sidebarOpen;
 				sbBtn.toggleClass('llm-graph-btn--active',this.sidebarOpen);

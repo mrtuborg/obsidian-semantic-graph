@@ -35,7 +35,14 @@ export interface Link3D {
 
 export interface Graph3DOptions {
 	onNodeClick: (id: string) => void;
-	onClose: () => void;
+	onClose:     () => void;
+	linkDist:    number;
+	chargeStr:   number;
+	gravityStr:  number;
+	nodeScale:   number;
+	edgeWidth:   number;
+	labelSize:   number;
+	labelFadeAt: number;
 }
 
 export class Graph3D {
@@ -57,10 +64,22 @@ export class Graph3D {
 	private container!: HTMLElement;
 	private opts!: Graph3DOptions;
 	private ro: ResizeObserver | null = null;
+	private sim: any = null;
+	private nodeBaseSizes = new Map<string, number>(); // id → base sphere scale before multiplier
+	private currentNodeScale = 1.0;
+	private currentLabelSize = 10;
+	private physicsLinkDist  = 80;
+	private physicsCharge    = 120;
+	private physicsGravity   = 0.04;
 
 	init(container: HTMLElement, opts: Graph3DOptions) {
 		this.container = container;
 		this.opts = opts;
+		this.currentNodeScale = opts.nodeScale;
+		this.currentLabelSize = opts.labelSize;
+		this.physicsLinkDist  = opts.linkDist;
+		this.physicsCharge    = opts.chargeStr;
+		this.physicsGravity   = opts.gravityStr;
 
 		const W = container.clientWidth  || 800;
 		const H = container.clientHeight || 600;
@@ -90,7 +109,8 @@ export class Graph3D {
 
 		// Edge geometry (updated each tick)
 		this.edgeGeo = new BufferGeometry();
-		this.edgeMat = new LineBasicMaterial({ vertexColors: false, color: 0x888888, opacity: 0.35, transparent: true });
+		const edgeOpacity = Math.min(0.85, 0.1 + (opts.edgeWidth / 8) * 0.75);
+		this.edgeMat = new LineBasicMaterial({ vertexColors: false, color: 0x888888, opacity: edgeOpacity, transparent: true });
 		this.edgeLines = new LineSegments(this.edgeGeo, this.edgeMat);
 		this.scene.add(this.edgeLines);
 
@@ -102,6 +122,9 @@ export class Graph3D {
 		this.ro = new ResizeObserver(() => this.onResize());
 		this.ro.observe(container);
 
+		// Apply initial label fade
+		this.updateLabelFade(opts.labelFadeAt);
+
 		this.loop();
 	}
 
@@ -111,6 +134,7 @@ export class Graph3D {
 		for (const s of this.labelSprites.values()) this.scene.remove(s);
 		this.nodeMeshes.clear();
 		this.labelSprites.clear();
+		this.nodeBaseSizes.clear();
 
 		this.simNodes = nodes;
 		this.simLinks = links;
@@ -119,13 +143,15 @@ export class Graph3D {
 		for (const nd of nodes) {
 			const mat = new MeshBasicMaterial({ color: new Color(nd.color) });
 			const mesh = new Mesh(geo.clone(), mat);
-			mesh.scale.setScalar(nd.size * 3.5);
+			const baseScale = nd.size * 3.5;
+			this.nodeBaseSizes.set(nd.id, baseScale);
+			mesh.scale.setScalar(baseScale * this.currentNodeScale);
 			mesh.userData.id = nd.id;
 			this.nodeMeshes.set(nd.id, mesh);
 			this.scene.add(mesh);
 
 			// Label sprite
-			const sprite = this.makeLabel(nd.title);
+			const sprite = this.makeLabel(nd.title, this.currentLabelSize);
 			sprite.userData.id = nd.id;
 			this.labelSprites.set(nd.id, sprite);
 			this.scene.add(sprite);
@@ -136,21 +162,67 @@ export class Graph3D {
 		this.edgeGeo.setAttribute('position', new Float32BufferAttribute(buf, 3));
 		this.edgeGeo.setDrawRange(0, 0);
 
-		// Run simulation
-		this.runSim();
+		// Run simulation with current physics settings
+		this.runSim(this.physicsLinkDist, this.physicsCharge, this.physicsGravity);
 	}
 
-	private runSim() {
-		const sim = forceSimulation(this.simNodes, 3)
+	private runSim(linkDist = 80, chargeStr = 120, gravityStr = 0.04) {
+		this.sim = forceSimulation(this.simNodes, 3)
 			.force('link', forceLink(this.simLinks)
 				.id((d: any) => d.id)
-				.distance(80).strength(0.4))
-			.force('charge', forceManyBody().strength(-120))
+				.distance(linkDist).strength(0.4))
+			.force('charge', forceManyBody().strength(-chargeStr))
 			.force('center', forceCenter(0, 0, 0))
-			.force('z', forceZ(0).strength(0.04))
+			.force('z', forceZ(0).strength(gravityStr))
 			.alphaDecay(0.025);
 
-		sim.on('tick', () => this.updatePositions());
+		this.sim.on('tick', () => this.updatePositions());
+	}
+
+	// ── Live update methods (called by slider handlers) ───────────────
+
+	updateLinkDist(val: number) {
+		this.sim?.force('link')?.distance(val);
+		this.sim?.alpha(0.4).restart();
+	}
+
+	updateCharge(val: number) {
+		this.sim?.force('charge')?.strength(-val);
+		this.sim?.alpha(0.4).restart();
+	}
+
+	updateGravity(val: number) {
+		this.sim?.force('z')?.strength(val);
+		this.sim?.alpha(0.3).restart();
+	}
+
+	updateNodeScale(scale: number) {
+		this.currentNodeScale = scale;
+		for (const [id, mesh] of this.nodeMeshes) {
+			const base = this.nodeBaseSizes.get(id) ?? 3.5;
+			mesh.scale.setScalar(base * scale);
+		}
+	}
+
+	updateEdgeWidth(val: number) {
+		// LineBasicMaterial linewidth doesn't work in WebGL — map to opacity
+		this.edgeMat.opacity = Math.min(0.85, 0.1 + (val / 8) * 0.75);
+	}
+
+	updateLabelSize(size: number) {
+		this.currentLabelSize = size;
+		for (const [, sprite] of this.labelSprites) {
+			const canvas = (sprite.material as SpriteMaterial).map?.image as HTMLCanvasElement;
+			if (!canvas) continue;
+			sprite.scale.set(canvas.width * size / 95, size * 1.4, 1);
+		}
+	}
+
+	updateLabelFade(fadeAt: number) {
+		// In 3D: show/hide labels based on fadeAt threshold vs camera distance-based scale
+		// Simple proxy: if fadeAt < 0.3 → hide labels, else show
+		const show = fadeAt > 0.15;
+		for (const s of this.labelSprites.values()) s.visible = show;
 	}
 
 	private updatePositions() {
@@ -190,7 +262,7 @@ export class Graph3D {
 		}
 	}
 
-	private makeLabel(text: string): Sprite {
+	private makeLabel(text: string, size = 10): Sprite {
 		const canvas = document.createElement('canvas');
 		const ctx = canvas.getContext('2d')!;
 		const label = text.length > 24 ? text.slice(0, 22) + '…' : text;
@@ -204,7 +276,7 @@ export class Graph3D {
 		const tex = new CanvasTexture(canvas);
 		const mat = new SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
 		const sprite = new Sprite(mat);
-		sprite.scale.set(w * 0.3, 14, 1);
+		sprite.scale.set(w * size / 95, size * 1.4, 1);
 		return sprite;
 	}
 
