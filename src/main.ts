@@ -1,4 +1,4 @@
-import { Plugin, ItemView, WorkspaceLeaf, TFile, setIcon } from 'obsidian';
+import { Plugin, PluginSettingTab, Setting, ItemView, WorkspaceLeaf, TFile, setIcon } from 'obsidian';
 import { select } from 'd3-selection';
 import {
 	forceSimulation, forceLink, forceManyBody,
@@ -168,6 +168,8 @@ interface GraphSettings {
 	selectedDomains: string[];
 	embeddingEndpoint: string;
 	embeddingModel:    string;
+	colorMode:         'type' | 'semantic';
+	numClusters:       number;
 }
 const DEFAULT_SETTINGS: GraphSettings = {
 	showNodeLabels: true,
@@ -187,6 +189,8 @@ const DEFAULT_SETTINGS: GraphSettings = {
 	selectedDomains: [],
 	embeddingEndpoint: 'http://localhost:11434',
 	embeddingModel:    'nomic-embed-text',
+	colorMode:         'type',
+	numClusters:       6,
 };
 
 class SemanticGraphView extends ItemView {
@@ -211,8 +215,11 @@ class SemanticGraphView extends ItemView {
 	private _labelsUserSet = false; // true once user explicitly toggles label button
 
 	// semantic search state
-	private embeddingEndpoint = 'http://localhost:11434';
-	private embeddingModel    = 'nomic-embed-text';
+	embeddingEndpoint = 'http://localhost:11434';
+	embeddingModel    = 'nomic-embed-text';
+	private colorMode: 'type' | 'semantic' = 'type';
+	private numClusters = 6;
+	private clusterMap  = new Map<string, number>(); // nodeId → cluster index
 	private bm25Index:  BM25Index | null = null;
 	private embeddings: Map<string, number[]> | null = null;
 	private semanticIds     = new Set<string>(); // last semantic result
@@ -277,6 +284,8 @@ class SemanticGraphView extends ItemView {
 		this.selectedDomains  = new Set(s.selectedDomains ?? []);
 		this.embeddingEndpoint = s.embeddingEndpoint ?? 'http://localhost:11434';
 		this.embeddingModel    = s.embeddingModel    ?? 'nomic-embed-text';
+		this.colorMode         = s.colorMode         ?? 'type';
+		this.numClusters       = s.numClusters       ?? 6;
 	}
 
 	private saveSettings() {
@@ -298,6 +307,8 @@ class SemanticGraphView extends ItemView {
 			selectedDomains: [...this.selectedDomains],
 			embeddingEndpoint: this.embeddingEndpoint,
 			embeddingModel:    this.embeddingModel,
+			colorMode:         this.colorMode,
+			numClusters:       this.numClusters,
 		};
 		this.plugin.saveData(s);
 	}
@@ -447,9 +458,61 @@ class SemanticGraphView extends ItemView {
 			const data: Record<string, number[]> = JSON.parse(raw);
 			this.embeddings = new Map(Object.entries(data));
 			console.log(`[llm-wiki-graph] loaded ${this.embeddings.size} embeddings`);
+			if (this.colorMode === 'semantic') this.computeClusters(this.numClusters);
 		} catch (e) {
 			console.warn('[llm-wiki-graph] could not load embeddings:', e);
 		}
+	}
+
+	// ── k-means clustering on embeddings ─────────────────────────────
+	private computeClusters(k: number) {
+		this.clusterMap.clear();
+		const emb = this.embeddings;
+		if (!emb || emb.size === 0) return;
+		const ids  = [...emb.keys()];
+		const vecs = ids.map(id => emb.get(id)!);
+		const dim  = vecs[0]?.length ?? 0;
+		if (dim === 0 || ids.length < k) { ids.forEach((id, i) => this.clusterMap.set(id, i % k)); return; }
+
+		// k-means++ init: first centroid random, each next is furthest from existing
+		const cosDist = (a: number[], b: number[]) => {
+			let dot = 0, na = 0, nb = 0;
+			for (let i = 0; i < a.length; i++) { dot += a[i]*b[i]; na += a[i]*a[i]; nb += b[i]*b[i]; }
+			const sim = na === 0 || nb === 0 ? 0 : dot / (Math.sqrt(na) * Math.sqrt(nb));
+			return 1 - sim;
+		};
+		const centroids: number[][] = [vecs[Math.floor(Math.random() * vecs.length)]];
+		while (centroids.length < k) {
+			const dists = vecs.map(v => Math.min(...centroids.map(c => cosDist(v, c))));
+			const sum   = dists.reduce((a, b) => a + b, 0);
+			let rnd = Math.random() * sum;
+			let idx = 0;
+			for (; idx < dists.length - 1; idx++) { rnd -= dists[idx]; if (rnd <= 0) break; }
+			centroids.push(vecs[idx]);
+		}
+
+		// iterate
+		const assignments = new Array<number>(vecs.length).fill(0);
+		for (let iter = 0; iter < 25; iter++) {
+			// assign
+			let changed = false;
+			for (let i = 0; i < vecs.length; i++) {
+				let best = 0, bestD = Infinity;
+				for (let c = 0; c < k; c++) { const d = cosDist(vecs[i], centroids[c]); if (d < bestD) { bestD = d; best = c; } }
+				if (assignments[i] !== best) { assignments[i] = best; changed = true; }
+			}
+			if (!changed) break;
+			// update centroids
+			for (let c = 0; c < k; c++) {
+				const members = vecs.filter((_, i) => assignments[i] === c);
+				if (members.length === 0) continue;
+				const newC = new Array<number>(dim).fill(0);
+				for (const v of members) for (let d = 0; d < dim; d++) newC[d] += v[d] / members.length;
+				centroids[c] = newC;
+			}
+		}
+		ids.forEach((id, i) => this.clusterMap.set(id, assignments[i]));
+		console.log(`[llm-wiki-graph] computed ${k} clusters over ${ids.length} nodes`);
 	}
 
 	// ── 1d. Semantic search via Ollama ───────────────────────────────
@@ -711,6 +774,7 @@ class SemanticGraphView extends ItemView {
 		const elBtn    = mkBtn('minus',        'Edges',     this.showEdgeLabels);
 		const arBtn    = mkBtn('arrow-right',  'Arrows',    this.showArrows);
 		const semBtn   = mkBtn('cpu',          'Semantic',  this.semSidebarOpen);
+		const clrBtn   = mkBtn('layers',       'Clusters',  this.colorMode === 'semantic');
 		const sbBtn    = mkBtn('bar-chart-2',  'Analytics', this.sidebarOpen);
 		toolbar.createSpan({ cls:'llm-graph-stats',
 			text:`${A.n} nodes · ${A.m} edges · density ${A.density}` });
@@ -876,9 +940,19 @@ class SemanticGraphView extends ItemView {
 				});
 			this.selNodeEl = nodeEl;
 
-			nodeEl.each(function(d) {
+			// capture for closures inside .each(function(){})
+		const colorMode_   = this.colorMode;
+		const clusterMap_  = this.clusterMap;
+		const nodeScale_   = this.nodeScale;
+
+		nodeEl.each(function(d) {
 				const g = select<SVGGElement, WikiNode>(this as SVGGElement);
-				const color  = NODE_COLORS[d.type] ?? '#BAB0AC';
+				let color: string;
+				if (colorMode_ === 'semantic' && clusterMap_.has(d.id)) {
+					color = DOMAIN_PALETTE[clusterMap_.get(d.id)! % DOMAIN_PALETTE.length];
+				} else {
+					color = NODE_COLORS[d.type] ?? '#BAB0AC';
+				}
 				const shape  = NODE_SHAPES[d.type]  ?? 'circle';
 				const cls    = 'llm-graph-node-shape';
 				// Size: prefer intra-domain children count; fallback to total degree
@@ -889,7 +963,7 @@ class SemanticGraphView extends ItemView {
 				const baseS = 1 + Math.log1p(sizeVal) * (intraDom > 0 ? 0.5 : 0.25);
 				const sw = g.append('g').attr('class', 'llm-node-shape-wrapper')
 					.attr('data-base-scale', baseS)          // stored for slider updates
-					.attr('transform', `scale(${baseS * this.nodeScale})`);
+					.attr('transform', `scale(${baseS * nodeScale_})`);
 				if (shape === 'diamond') {
 					sw.append('rect').attr('class', cls)
 						.attr('width', 11).attr('height', 11)
@@ -1085,6 +1159,21 @@ class SemanticGraphView extends ItemView {
 			semSidebar.toggleClass('llm-graph-sem-sidebar--open',this.semSidebarOpen);
 			this.saveSettings();
 		});
+		clrBtn.addEventListener('click',()=>{
+			if (this.colorMode === 'type') {
+				if (!this.embeddings || this.embeddings.size === 0) {
+					new (require('obsidian').Notice)('Generate embeddings first (Semantic sidebar)');
+					return;
+				}
+				this.colorMode = 'semantic';
+				this.computeClusters(this.numClusters);
+			} else {
+				this.colorMode = 'type';
+			}
+			clrBtn.toggleClass('llm-graph-btn--active', this.colorMode === 'semantic');
+			this.saveSettings();
+			this.render();
+		});
 	}
 
 	// ── 5a. Generate embeddings for all wiki nodes ───────────────────
@@ -1145,33 +1234,7 @@ class SemanticGraphView extends ItemView {
 
 		if (!emb || emb.size === 0) {
 			const ns = section('Semantic Metrics');
-			ns.createDiv({ cls: 'llm-sb-muted', text: 'No embeddings found. Generate them below (requires Ollama running).' });
-
-			// Generate button
-			const genRow = ns.createDiv({ cls: 'llm-sem-gen-row' });
-			const endpointInput = genRow.createEl('input', {
-				cls: 'llm-sem-gen-input',
-				attr: { type: 'text', value: this.embeddingEndpoint, placeholder: 'http://localhost:11434' }
-			});
-			const modelInput = genRow.createEl('input', {
-				cls: 'llm-sem-gen-input',
-				attr: { type: 'text', value: this.embeddingModel, placeholder: 'nomic-embed-text' }
-			});
-			const progress = ns.createDiv({ cls: 'llm-sem-gen-progress' });
-			const genBtn = ns.createEl('button', { cls: 'llm-graph-btn llm-sem-gen-btn', text: 'Generate Embeddings' });
-
-			genBtn.addEventListener('click', async () => {
-				this.embeddingEndpoint = endpointInput.value.trim() || 'http://localhost:11434';
-				this.embeddingModel    = modelInput.value.trim()    || 'nomic-embed-text';
-				this.saveSettings();
-				genBtn.disabled = true;
-				genBtn.textContent = 'Generating…';
-				await this.generateEmbeddings(progress);
-				// Reload and rebuild sidebar
-				await this.loadEmbeddings();
-				this.buildSemanticSidebar(el);
-			});
-			return;
+			ns.createDiv({ cls: 'llm-sb-muted', text: 'No embeddings found. Generate them below (requires Ollama running). Configure endpoint and model in plugin Settings.' });
 		}
 
 		// ── Cosine similarity helper ──────────────────────────────────
@@ -1288,6 +1351,38 @@ class SemanticGraphView extends ItemView {
 			const lb = r.createEl('a', { cls: 'llm-sb-miss-name', text: b.length>18?b.slice(0,16)+'…':b });
 			lb.addEventListener('click', () => this.app.workspace.openLinkText(b, '', false));
 		}
+
+		// ── Cluster settings (visible when embeddings exist) ──────────
+		if (emb && emb.size > 0) {
+			const ks = section('Semantic Clusters');
+			const kRow = ks.createDiv({ cls: 'llm-sb-slider-row' });
+			kRow.createSpan({ cls: 'llm-sb-slider-lbl', text: 'k clusters' });
+			const kInput = kRow.createEl('input', { type: 'range' });
+			kInput.addClass('llm-sb-slider');
+			kInput.min = '2'; kInput.max = '20'; kInput.step = '1';
+			kInput.value = String(this.numClusters);
+			const kVal = kRow.createSpan({ cls: 'llm-sb-slider-val', text: String(this.numClusters) });
+			kInput.addEventListener('input', () => {
+				const k = +kInput.value;
+				kVal.textContent = String(k);
+				this.numClusters = k;
+				this.saveSettings();
+				if (this.colorMode === 'semantic') { this.computeClusters(k); this.render(); }
+			});
+		}
+
+		// ── Generate / Regenerate section (always visible) ────────────
+		const gs = section(emb && emb.size > 0 ? `Regenerate Embeddings (${emb.size} stored)` : 'Generate Embeddings');
+		gs.createDiv({ cls: 'llm-sb-muted', text: `Endpoint: ${this.embeddingEndpoint} · Model: ${this.embeddingModel}` });
+		const progress = gs.createDiv({ cls: 'llm-sem-gen-progress' });
+		const genBtn = gs.createEl('button', { cls: 'llm-graph-btn llm-sem-gen-btn', text: emb && emb.size > 0 ? 'Regenerate' : 'Generate Embeddings' });
+		genBtn.addEventListener('click', async () => {
+			genBtn.disabled = true;
+			genBtn.textContent = 'Generating…';
+			await this.generateEmbeddings(progress);
+			await this.loadEmbeddings();
+			this.buildSemanticSidebar(el);
+		});
 	}
 
 	// ── 5. Sidebar ────────────────────────────────────────────────────
@@ -1490,18 +1585,66 @@ class SemanticGraphView extends ItemView {
 	}
 }
 
+// ─── Settings Tab ─────────────────────────────────────────────────────────────
+class LLMWikiSettingTab extends PluginSettingTab {
+	plugin: LLMWikiSemanticGraph;
+	constructor(app: any, plugin: LLMWikiSemanticGraph) {
+		super(app, plugin);
+		this.plugin = plugin;
+	}
+	display() {
+		const { containerEl } = this;
+		containerEl.empty();
+		containerEl.createEl('h2', { text: 'LLM Wiki Semantic Graph' });
+
+		new Setting(containerEl)
+			.setName('Ollama endpoint')
+			.setDesc('Base URL of your Ollama server (no trailing slash)')
+			.addText(text => text
+				.setPlaceholder('http://localhost:11434')
+				.setValue(this.plugin.embeddingEndpoint)
+				.onChange(async (val) => {
+					const v = val.trim() || 'http://localhost:11434';
+					this.plugin.embeddingEndpoint = v;
+					const view = this.plugin.getActiveView();
+					if (view) { view.embeddingEndpoint = v; view['saveSettings'](); }
+				}));
+
+		new Setting(containerEl)
+			.setName('Embedding model')
+			.setDesc('Ollama model to use for embeddings (must be pulled locally)')
+			.addText(text => text
+				.setPlaceholder('nomic-embed-text')
+				.setValue(this.plugin.embeddingModel)
+				.onChange(async (val) => {
+					const v = val.trim() || 'nomic-embed-text';
+					this.plugin.embeddingModel = v;
+					const view = this.plugin.getActiveView();
+					if (view) { view.embeddingModel = v; view['saveSettings'](); }
+				}));
+	}
+}
+
 // ─── Plugin ───────────────────────────────────────────────────────────────────
 export default class LLMWikiSemanticGraph extends Plugin {
+	embeddingEndpoint = 'http://localhost:11434';
+	embeddingModel    = 'nomic-embed-text';
+
 	async onload() {
 		this.registerView(VIEW_TYPE, leaf => new SemanticGraphView(leaf, this));
 		this.addRibbonIcon('git-fork','LLM Wiki Semantic Graph',()=>this.activateView());
 		this.addCommand({id:'open-semantic-graph',name:'Open Semantic Graph',callback:()=>this.activateView()});
+		this.addSettingTab(new LLMWikiSettingTab(this.app, this));
 	}
 	async activateView() {
 		const {workspace}=this.app;
 		let leaf=workspace.getLeavesOfType(VIEW_TYPE)[0];
 		if (!leaf) { leaf=workspace.getRightLeaf(false)!; await leaf.setViewState({type:VIEW_TYPE,active:true}); }
 		workspace.revealLeaf(leaf);
+	}
+	getActiveView(): SemanticGraphView | null {
+		const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
+		return leaf?.view instanceof SemanticGraphView ? leaf.view as SemanticGraphView : null;
 	}
 	onunload() {}
 }
