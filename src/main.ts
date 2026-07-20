@@ -749,8 +749,8 @@ class SemanticGraphView extends ItemView {
 			});
 		svg.call(this.zoomBehavior);
 
-		// Restore saved zoom transform (after refresh or load)
-		if (this.savedTransform) {
+		// Restore saved zoom — skip when domain filter active (auto-fit will handle it)
+		if (this.savedTransform && this.selectedDomains.size === 0) {
 			const { k, x, y } = this.savedTransform;
 			svg.call(this.zoomBehavior.transform, zoomIdentity.translate(x, y).scale(k));
 		}
@@ -960,6 +960,27 @@ class SemanticGraphView extends ItemView {
 					.attr('y',d=>((d.source as WikiNode).y!+(d.target as WikiNode).y!)/2);
 				nodeEl.attr('transform',d=>`translate(${d.x},${d.y})`);
 			});
+
+			// Auto-fit when domain filter active or no saved transform
+			const shouldAutoFit = this.selectedDomains.size > 0 || !this.savedTransform;
+			if (shouldAutoFit) {
+				this.sim.on('end', () => {
+					const nodes = renderNodes.filter(d => d.x != null && d.y != null);
+					if (nodes.length === 0) return;
+					const xs = nodes.map(d => d.x!), ys = nodes.map(d => d.y!);
+					const x0 = Math.min(...xs), x1 = Math.max(...xs);
+					const y0 = Math.min(...ys), y1 = Math.max(...ys);
+					const W = svgEl.clientWidth || 900, H = svgEl.clientHeight || 700;
+					const pad = 60;
+					const scaleX = (W - pad*2) / Math.max(x1 - x0, 1);
+					const scaleY = (H - pad*2) / Math.max(y1 - y0, 1);
+					const k = Math.min(scaleX, scaleY, 3); // cap at 3× zoom
+					const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+					svg.transition().duration(500)
+						.call(this.zoomBehavior.transform,
+							zoomIdentity.translate(W/2, H/2).scale(k).translate(-cx, -cy));
+				});
+			}
 
 			// Wire physics sliders (must happen after sim is created)
 			sidebar.querySelectorAll<HTMLInputElement>('[data-physics]').forEach(input=>{
