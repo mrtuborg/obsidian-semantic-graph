@@ -606,6 +606,23 @@ class SemanticGraphView extends ItemView {
 		return adj;
 	}
 
+	/** Recolor existing 2D nodes in-place — no simulation restart, no zoom change */
+	private recolorNodes() {
+		if (!this.selNodeEl) return;
+		const colorMode_ = this.colorMode;
+		const clusterMap_ = this.clusterMap;
+		this.selNodeEl.each(function(d: WikiNode) {
+			let color: string;
+			if (colorMode_ === 'semantic' && clusterMap_.has(d.id)) {
+				color = DOMAIN_PALETTE[clusterMap_.get(d.id)! % DOMAIN_PALETTE.length];
+			} else {
+				color = NODE_COLORS[d.type] ?? '#BAB0AC';
+			}
+			select(this as SVGGElement).selectAll<SVGElement, unknown>('.llm-graph-node-shape')
+				.attr('fill', color);
+		});
+	}
+
 	private applyVisibility(adj: Map<string,Set<string>>) {
 		if (!this.selNodeEl) return;
 		const sel  = this.selectedId;
@@ -887,15 +904,26 @@ class SemanticGraphView extends ItemView {
 				this.saveSettings();
 				this.render();
 			});
-			// Wire clrBtn for cluster colors in 3D — save camera state so position is restored
+			// Wire clrBtn for cluster colors in 3D — update colors in-place, no re-render
 			clrBtn.addEventListener('click', () => {
 				if (this.colorMode === 'type') {
 					if (!this.embeddings || this.embeddings.size === 0) return;
 					this.colorMode = 'semantic'; this.computeClusters(this.numClusters);
 				} else { this.colorMode = 'type'; }
 				clrBtn.toggleClass('llm-graph-btn--active', this.colorMode === 'semantic');
-				if (this.graph3D) this.savedCameraState = this.graph3D.getCameraState();
-				this.saveSettings(); this.render();
+				this.saveSettings();
+				if (this.graph3D) {
+					const colorMap = new Map(nodes3D.map(nd => [nd.id, nd.color]));
+					// Re-derive colors with new mode
+					const colorMode_ = this.colorMode; const clusterMap_ = this.clusterMap;
+					nodes3D.forEach(nd => {
+						nd.color = colorMode_ === 'semantic' && clusterMap_.has(nd.id)
+							? DOMAIN_PALETTE[clusterMap_.get(nd.id)! % DOMAIN_PALETTE.length]
+							: NODE_COLORS[nd.type] ?? '#BAB0AC';
+						colorMap.set(nd.id, nd.color);
+					});
+					this.graph3D.updateColors(colorMap);
+				}
 			});
 
 			requestAnimationFrame(() => {
@@ -1349,8 +1377,8 @@ class SemanticGraphView extends ItemView {
 			}
 			clrBtn.toggleClass('llm-graph-btn--active', this.colorMode === 'semantic');
 			this.saveSettings();
-			this.captureZoom();  // preserve 2D pan/zoom across color mode switch
-			this.render();
+			// Recolor in-place — no simulation restart, zoom/position unchanged
+			this.recolorNodes();
 		});
 		btn3D.addEventListener('click', () => {
 			if (this.graph3D) {
@@ -1615,10 +1643,17 @@ class SemanticGraphView extends ItemView {
 			this.saveSettings();
 			if (this.colorMode === 'semantic') {
 				this.computeClusters(k);
-				// preserve current view
-				if (this.graph3D) this.savedCameraState = this.graph3D.getCameraState();
-				else this.captureZoom();
-				this.render();
+				this.recolorNodes();        // 2D: recolor in-place
+				if (this.graph3D) {         // 3D: update mesh colors in-place
+					const colorMode_ = this.colorMode; const clusterMap_ = this.clusterMap;
+					const colorMap = new Map<string, string>();
+					for (const id of this.graph3D.nodeIds) {
+						colorMap.set(id, colorMode_ === 'semantic' && clusterMap_.has(id)
+							? DOMAIN_PALETTE[clusterMap_.get(id)! % DOMAIN_PALETTE.length]
+							: NODE_COLORS[this.graph3D.getNodeType(id)] ?? '#BAB0AC');
+					}
+					this.graph3D.updateColors(colorMap);
+				}
 			}
 		});
 

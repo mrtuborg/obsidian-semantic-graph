@@ -59,6 +59,8 @@ export class Graph3D {
 	private edgeMat!: LineBasicMaterial;
 	private edgeLines!: LineSegments;
 	private simNodes: Node3D[] = [];
+	get nodeIds(): string[] { return this.simNodes.map(n => n.id); }
+	getNodeType(id: string): string { return this.simNodes.find(n => n.id === id)?.type ?? 'concept'; }
 	private simLinks: Link3D[] = [];
 	private hoveredId: string | null = null;
 	private container!: HTMLElement;
@@ -334,6 +336,14 @@ export class Graph3D {
 		this.camera.aspect = W / H;
 		this.camera.updateProjectionMatrix();
 		this.renderer.setSize(W, H);
+	}
+
+	/** Update node mesh colors in-place without re-running simulation */
+	updateColors(colorMap: Map<string, string>) {
+		for (const [id, mesh] of this.nodeMeshes) {
+			const color = colorMap.get(id);
+			if (color) (mesh.material as MeshBasicMaterial).color.set(color);
+		}
 	}
 
 	/** Save camera position + OrbitControls target for restoring after a re-render */
