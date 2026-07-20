@@ -119,10 +119,9 @@ export class Graph3D {
 		// Constellation edge geometry
 		this.edgeGeo = new BufferGeometry();
 		this.edgeMat = new LineBasicMaterial({
-			color: 0x5577cc,
-			opacity: Math.min(0.7, 0.15 + (opts.edgeWidth / 8) * 0.55),
+			color: 0x445577,
+			opacity: Math.min(0.5, 0.12 + (opts.edgeWidth / 8) * 0.38),
 			transparent: true,
-			blending: AdditiveBlending,
 			depthWrite: false,
 		});
 		this.edgeLines = new LineSegments(this.edgeGeo, this.edgeMat);
@@ -141,10 +140,9 @@ export class Graph3D {
 	}
 
 	private buildStarField() {
-		const N = 3000;
+		const N = 2000;
 		const pos = new Float32Array(N * 3);
 		for (let i = 0; i < N; i++) {
-			// Uniform distribution on large sphere shell
 			const theta = Math.random() * Math.PI * 2;
 			const phi   = Math.acos(2 * Math.random() - 1);
 			const r     = 1800 + Math.random() * 800;
@@ -155,28 +153,27 @@ export class Graph3D {
 		const geo = new BufferGeometry();
 		geo.setAttribute('position', new Float32BufferAttribute(pos, 3));
 		const mat = new PointsMaterial({
-			color: 0xbbccff,
-			size: 1.8,
+			color: 0xd0d8f0,
+			size: 1.0,
 			sizeAttenuation: true,
 			transparent: true,
-			opacity: 0.75,
-			blending: AdditiveBlending,
+			opacity: 0.5,
 			depthWrite: false,
 		});
 		this.starField = new Points(geo, mat);
 		this.scene.add(this.starField);
 	}
 
-	/** Build a radial glow canvas for a star node */
-	private makeGlowCanvas(color: string, sz = 128): HTMLCanvasElement {
+	/** Small sharp glow — professional star look, not cartoon */
+	private makeGlowCanvas(color: string, sz = 64): HTMLCanvasElement {
 		const c = document.createElement('canvas');
 		c.width = c.height = sz;
 		const ctx = c.getContext('2d')!;
 		const half = sz / 2;
 		const grad = ctx.createRadialGradient(half, half, 0, half, half, half);
-		grad.addColorStop(0.00, '#ffffff');          // bright white core
-		grad.addColorStop(0.10, color);              // node color halo
-		grad.addColorStop(0.40, color + '66');       // outer diffuse
+		grad.addColorStop(0.00, '#ffffff');        // sharp white core
+		grad.addColorStop(0.12, color);            // color ring, tight
+		grad.addColorStop(0.35, color + '44');     // very faint halo
 		grad.addColorStop(1.00, 'rgba(0,0,0,0)');
 		ctx.fillStyle = grad;
 		ctx.fillRect(0, 0, sz, sz);
@@ -210,8 +207,8 @@ export class Graph3D {
 			this.nodeMeshes.set(nd.id, mesh);
 			this.scene.add(mesh);
 
-			// Glow sprite — the actual star visual
-			const glowCanvas = this.makeGlowCanvas(nd.color, 128);
+			// Glow sprite — compact star, not oversized
+			const glowCanvas = this.makeGlowCanvas(nd.color, 64);
 			const glowTex = new CanvasTexture(glowCanvas);
 			const glowMat = new SpriteMaterial({
 				map: glowTex,
@@ -220,13 +217,13 @@ export class Graph3D {
 				depthWrite: false,
 			});
 			const glow = new Sprite(glowMat);
-			const glowScale = baseScale * this.currentNodeScale * 6;
+			const glowScale = baseScale * this.currentNodeScale * 3.5;
 			glow.scale.setScalar(glowScale);
 			glow.userData.id = nd.id;
 			this.glowSprites.set(nd.id, glow);
 			this.scene.add(glow);
 
-			// Label — white text for dark space
+			// Label — clean, readable
 			const label = this.makeLabel(nd.title, this.currentLabelSize);
 			label.userData.id = nd.id;
 			this.labelSprites.set(nd.id, label);
@@ -279,12 +276,12 @@ export class Graph3D {
 			const base = this.nodeBaseSizes.get(id) ?? 5;
 			mesh.scale.setScalar(base * scale);
 			const glow = this.glowSprites.get(id);
-			if (glow) glow.scale.setScalar(base * scale * 6);
+			if (glow) glow.scale.setScalar(base * scale * 3.5);
 		}
 	}
 
 	updateEdgeWidth(val: number) {
-		this.edgeMat.opacity = Math.min(0.7, 0.15 + (val / 8) * 0.55);
+		this.edgeMat.opacity = Math.min(0.5, 0.12 + (val / 8) * 0.38);
 	}
 
 	updateLabelSize(size: number) {
@@ -342,20 +339,17 @@ export class Graph3D {
 		const canvas = document.createElement('canvas');
 		const ctx = canvas.getContext('2d')!;
 		const label = text.length > 24 ? text.slice(0, 22) + '…' : text;
-		ctx.font = 'bold 26px monospace';
-		const w = ctx.measureText(label).width + 20;
+		ctx.font = '24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+		const w = ctx.measureText(label).width + 16;
 		canvas.width  = w;
-		canvas.height = 44;
-		ctx.font = 'bold 26px monospace';
-		// Subtle glow behind text
-		ctx.shadowColor = '#88aaff';
-		ctx.shadowBlur = 8;
-		ctx.fillStyle = '#ddeeff';
-		ctx.fillText(label, 10, 32);
+		canvas.height = 40;
+		ctx.font = '24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+		ctx.fillStyle = 'rgba(220, 230, 255, 0.90)';
+		ctx.fillText(label, 8, 30);
 		const tex = new CanvasTexture(canvas);
 		const mat = new SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
 		const sprite = new Sprite(mat);
-		sprite.scale.set(w * size / 95, size * 1.4, 1);
+		sprite.scale.set(w * size / 95, size * 1.3, 1);
 		return sprite;
 	}
 
@@ -387,25 +381,21 @@ export class Graph3D {
 		this.controls.update();
 		this.frameCount++;
 
-		// Slow background star rotation for parallax depth feel
-		if (this.starField) this.starField.rotation.y += 0.00008;
+		// Very slow star field drift — barely noticeable, adds depth
+		if (this.starField) this.starField.rotation.y += 0.000025;
 
-		// Subtle twinkle: pulse star opacity on a slow sine
-		const twinkle = 0.75 + Math.sin(this.frameCount * 0.02) * 0.12;
-		if (this.starField) (this.starField.material as PointsMaterial).opacity = twinkle;
-
-		// Hover detection — scale up glow sprite
+		// Hover detection — glow sprite brightens slightly
 		this.raycaster.setFromCamera(this.mouse, this.camera);
 		const hits = this.raycaster.intersectObjects([...this.nodeMeshes.values()]);
 		const newHover = hits.length > 0 ? (hits[0].object.userData.id as string) : null;
 		if (newHover !== this.hoveredId) {
 			if (this.hoveredId) {
 				const g = this.glowSprites.get(this.hoveredId);
-				if (g) { const base = this.nodeBaseSizes.get(this.hoveredId) ?? 5; g.scale.setScalar(base * this.currentNodeScale * 6); }
+				if (g) { const base = this.nodeBaseSizes.get(this.hoveredId) ?? 5; g.scale.setScalar(base * this.currentNodeScale * 3.5); }
 			}
 			if (newHover) {
 				const g = this.glowSprites.get(newHover);
-				if (g) { const base = this.nodeBaseSizes.get(newHover) ?? 5; g.scale.setScalar(base * this.currentNodeScale * 10); }
+				if (g) { const base = this.nodeBaseSizes.get(newHover) ?? 5; g.scale.setScalar(base * this.currentNodeScale * 5.5); }
 			}
 			this.hoveredId = newHover;
 			this.renderer.domElement.style.cursor = newHover ? 'pointer' : 'default';
