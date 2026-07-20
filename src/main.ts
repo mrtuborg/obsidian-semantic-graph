@@ -1087,6 +1087,50 @@ class SemanticGraphView extends ItemView {
 		});
 	}
 
+	// ── 5a. Generate embeddings for all wiki nodes ───────────────────
+	private async generateEmbeddings(progressEl: HTMLElement) {
+		const wikiFiles = this.app.vault.getMarkdownFiles().filter(f =>
+			f.path.startsWith('wiki/') && !['wiki/updates/','wiki/compiled/','wiki/graph/','wiki/synthesis/','wiki/decisions/'].some(ex => f.path.includes(ex)));
+
+		const result: Record<string, number[]> = {};
+		const total = wikiFiles.length;
+		let done = 0, failed = 0;
+
+		for (const file of wikiFiles) {
+			progressEl.textContent = `${done}/${total} embedded${failed ? ` (${failed} failed)` : ''}…`;
+			try {
+				const raw = await this.app.vault.cachedRead(file);
+				// Use first 1000 chars of content (skip frontmatter)
+				const body = raw.replace(/^---[\s\S]*?---\n?/, '').slice(0, 1000);
+				const text = file.basename + '. ' + body;
+				const resp = await fetch(`${this.embeddingEndpoint}/api/embeddings`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ model: this.embeddingModel, prompt: text }),
+				});
+				if (!resp.ok) { failed++; continue; }
+				const vec = (await resp.json()).embedding as number[];
+				if (vec?.length) result[file.basename] = vec;
+			} catch { failed++; }
+			done++;
+		}
+
+		progressEl.textContent = `Done: ${done} embedded, ${failed} failed. Saving…`;
+
+		// Save to wiki/search/embeddings.json
+		const outPath = 'wiki/search/embeddings.json';
+		const json = JSON.stringify(result);
+		const existing = this.app.vault.getAbstractFileByPath(outPath);
+		if (existing instanceof TFile) {
+			await this.app.vault.modify(existing, json);
+		} else {
+			// ensure folder exists
+			try { await this.app.vault.createFolder('wiki/search'); } catch {}
+			await this.app.vault.create(outPath, json);
+		}
+		progressEl.textContent = `✓ ${Object.keys(result).length} embeddings saved.`;
+	}
+
 	// ── 5b. Semantic Sidebar ──────────────────────────────────────────
 	private buildSemanticSidebar(el: HTMLElement) {
 		el.empty();
@@ -1101,7 +1145,32 @@ class SemanticGraphView extends ItemView {
 
 		if (!emb || emb.size === 0) {
 			const ns = section('Semantic Metrics');
-			ns.createDiv({ cls: 'llm-sb-muted', text: 'No embeddings loaded. Use semantic search first to generate them.' });
+			ns.createDiv({ cls: 'llm-sb-muted', text: 'No embeddings found. Generate them below (requires Ollama running).' });
+
+			// Generate button
+			const genRow = ns.createDiv({ cls: 'llm-sem-gen-row' });
+			const endpointInput = genRow.createEl('input', {
+				cls: 'llm-sem-gen-input',
+				attr: { type: 'text', value: this.embeddingEndpoint, placeholder: 'http://localhost:11434' }
+			});
+			const modelInput = genRow.createEl('input', {
+				cls: 'llm-sem-gen-input',
+				attr: { type: 'text', value: this.embeddingModel, placeholder: 'nomic-embed-text' }
+			});
+			const progress = ns.createDiv({ cls: 'llm-sem-gen-progress' });
+			const genBtn = ns.createEl('button', { cls: 'llm-graph-btn llm-sem-gen-btn', text: 'Generate Embeddings' });
+
+			genBtn.addEventListener('click', async () => {
+				this.embeddingEndpoint = endpointInput.value.trim() || 'http://localhost:11434';
+				this.embeddingModel    = modelInput.value.trim()    || 'nomic-embed-text';
+				this.saveSettings();
+				genBtn.disabled = true;
+				genBtn.textContent = 'Generating…';
+				await this.generateEmbeddings(progress);
+				// Reload and rebuild sidebar
+				await this.loadEmbeddings();
+				this.buildSemanticSidebar(el);
+			});
 			return;
 		}
 
