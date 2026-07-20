@@ -160,7 +160,9 @@ interface GraphSettings {
 	chargeStr:      number;
 	gravityStr:     number;
 	labelFadeAt:    number;
-	labelSize:      number; // base font size in SVG units
+	labelSize:      number;
+	nodeScale:      number;  // multiplier over degree-based size
+	edgeWidth:      number;  // base stroke-width for edges
 	searchQuery:    string;
 	selectedDomains: string[];
 	embeddingEndpoint: string;
@@ -177,6 +179,8 @@ const DEFAULT_SETTINGS: GraphSettings = {
 	gravityStr:     0.03,
 	labelFadeAt:    0.9,
 	labelSize:      10,
+	nodeScale:      1.0,
+	edgeWidth:      1.2,
 	searchQuery:    '',
 	selectedDomains: [],
 	embeddingEndpoint: 'http://localhost:11434',
@@ -216,7 +220,9 @@ class SemanticGraphView extends ItemView {
 	private chargeStr   = 120;
 	private gravityStr  = 0.03;
 	private labelFadeAt = 0.9;
-	private labelSize   = 10; // base font size in SVG units
+	private labelSize   = 10;
+	private nodeScale   = 1.0;
+	private edgeWidth   = 1.2;
 
 	// zoom state — persisted across refreshes
 	private savedTransform: { k: number; x: number; y: number } | null = null;
@@ -261,6 +267,8 @@ class SemanticGraphView extends ItemView {
 		this.gravityStr     = s.gravityStr;
 		this.labelFadeAt    = s.labelFadeAt ?? 0.9;
 		this.labelSize      = s.labelSize   ?? 10;
+		this.nodeScale      = s.nodeScale   ?? 1.0;
+		this.edgeWidth      = s.edgeWidth   ?? 1.2;
 		this.searchQuery    = s.searchQuery;
 		this.selectedDomains  = new Set(s.selectedDomains ?? []);
 		this.embeddingEndpoint = s.embeddingEndpoint ?? 'http://localhost:11434';
@@ -279,6 +287,8 @@ class SemanticGraphView extends ItemView {
 			gravityStr:     this.gravityStr,
 			labelFadeAt:    this.labelFadeAt,
 			labelSize:      this.labelSize,
+			nodeScale:      this.nodeScale,
+			edgeWidth:      this.edgeWidth,
 			searchQuery:    this.searchQuery,
 			selectedDomains: [...this.selectedDomains],
 			embeddingEndpoint: this.embeddingEndpoint,
@@ -811,7 +821,7 @@ class SemanticGraphView extends ItemView {
 				.selectAll<SVGLineElement,typeof simEdges[0]>('line')
 				.data(simEdges).join('line')
 				.attr('class','llm-graph-edge')
-				.attr('stroke-width', 1.2)
+				.attr('stroke-width', this.edgeWidth)
 				.style('stroke', (d: any) => {
 					// inline style wins over CSS class — mandatory for domain coloring
 					const domain = (d.source as WikiNode).domain || (d.target as WikiNode).domain;
@@ -864,10 +874,11 @@ class SemanticGraphView extends ItemView {
 				const intraDom = A.intraDomainOut.get(d.id) ?? 0;
 				const deg      = A.degreeOf.get(d.id) ?? 0;
 				const sizeVal  = intraDom > 0 ? intraDom : deg;
-				// log scale; intra-domain hubs scale faster (×0.5 vs ×0.35)
-				const s = 1 + Math.log1p(sizeVal) * (intraDom > 0 ? 0.5 : 0.25);
+				// base scale from degree (log); nodeScale multiplier applied on top
+				const baseS = 1 + Math.log1p(sizeVal) * (intraDom > 0 ? 0.5 : 0.25);
 				const sw = g.append('g').attr('class', 'llm-node-shape-wrapper')
-					.attr('transform', `scale(${s})`);
+					.attr('data-base-scale', baseS)          // stored for slider updates
+					.attr('transform', `scale(${baseS * this.nodeScale})`);
 				if (shape === 'diamond') {
 					sw.append('rect').attr('class', cls)
 						.attr('width', 11).attr('height', 11)
@@ -956,7 +967,7 @@ class SemanticGraphView extends ItemView {
 					const val = +input.value;
 					const key = input.dataset.physics!;
 					const lbl = input.nextElementSibling as HTMLElement;
-					const isFloat = key === 'gravityStr' || key === 'labelFadeAt';
+					const isFloat = key === 'gravityStr' || key === 'labelFadeAt' || key === 'nodeScale' || key === 'edgeWidth';
 					if (lbl) lbl.textContent = isFloat ? val.toFixed(2) : String(val);
 					if (key==='linkDist') {
 						this.linkDist = val;
@@ -984,6 +995,20 @@ class SemanticGraphView extends ItemView {
 							g.selectAll('.llm-graph-edge-label')
 								.style('font-size', `${(this.labelSize * 0.85) / k}px`)
 								.style('opacity', op);
+						this.saveSettings();
+						return;
+					} else if (key==='nodeScale') {
+						this.nodeScale = val;
+						// Update each node wrapper: scale(baseS * nodeScale) — keeps degree-dynamic sizing
+						g.selectAll<SVGGElement, WikiNode>('.llm-node-shape-wrapper').attr('transform', function() {
+							const baseS = +(this.getAttribute('data-base-scale') ?? 1);
+							return `scale(${baseS * val})`;
+						});
+						this.saveSettings();
+						return;
+					} else if (key==='edgeWidth') {
+						this.edgeWidth = val;
+						this.selEdgeLine?.attr('stroke-width', val);
 						this.saveSettings();
 						return;
 					}
@@ -1048,6 +1073,8 @@ class SemanticGraphView extends ItemView {
 		mkSlider('Link dist',   'linkDist',    20,   200,  this.linkDist,    5);
 		mkSlider('Repulsion',   'chargeStr',   30,   800,  this.chargeStr,   10);
 		mkSlider('Gravity',     'gravityStr',  0,    0.3,  this.gravityStr,  0.01);
+		mkSlider('Node size',   'nodeScale',   0.3,  4.0,  this.nodeScale,   0.1);
+		mkSlider('Edge width',  'edgeWidth',   0.5,  8.0,  this.edgeWidth,   0.5);
 		mkSlider('Font size',   'labelSize',   6,    24,   this.labelSize,   1);
 		mkSlider('Labels fade', 'labelFadeAt', 0.05, 3.0,  this.labelFadeAt, 0.05);
 
