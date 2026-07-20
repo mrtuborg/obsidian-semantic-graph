@@ -243,6 +243,7 @@ class SemanticGraphView extends ItemView {
 
 	// zoom state — persisted across refreshes
 	private savedTransform: { k: number; x: number; y: number } | null = null;
+	private savedCameraState: { px: number; py: number; pz: number; tx: number; ty: number; tz: number } | null = null;
 
 	// pending rAF handle — cancelled before each rebuild
 	private pendingRaf: number | null = null;
@@ -876,19 +877,24 @@ class SemanticGraphView extends ItemView {
 					target: typeof e.target === 'string' ? e.target : (e.target as WikiNode).id,
 				}));
 
-			// Wire 3D button for toggling mode
+			// Wire 3D button for toggling back to 2D
 			btn3D.addEventListener('click', () => {
+				if (this.graph3D) {
+					this.savedCameraState = this.graph3D.getCameraState(); // save camera before disposing
+					this.graph3D.dispose(); this.graph3D = null;
+				}
 				this.mode3D = false;
 				this.saveSettings();
 				this.render();
 			});
-			// Wire clrBtn for cluster colors in 3D
+			// Wire clrBtn for cluster colors in 3D — save camera state so position is restored
 			clrBtn.addEventListener('click', () => {
 				if (this.colorMode === 'type') {
 					if (!this.embeddings || this.embeddings.size === 0) return;
 					this.colorMode = 'semantic'; this.computeClusters(this.numClusters);
 				} else { this.colorMode = 'type'; }
 				clrBtn.toggleClass('llm-graph-btn--active', this.colorMode === 'semantic');
+				if (this.graph3D) this.savedCameraState = this.graph3D.getCameraState();
 				this.saveSettings(); this.render();
 			});
 
@@ -905,6 +911,11 @@ class SemanticGraphView extends ItemView {
 					labelFadeAt: this.labelFadeAt,
 				});
 				g3.setData(nodes3D, links3D);
+				// Restore camera position from previous 3D session (cluster switch / re-render)
+				if (this.savedCameraState) {
+					g3.setCameraState(this.savedCameraState);
+					this.savedCameraState = null;
+				}
 			});
 
 			// Wire sliders for 3D mode
@@ -1338,10 +1349,16 @@ class SemanticGraphView extends ItemView {
 			}
 			clrBtn.toggleClass('llm-graph-btn--active', this.colorMode === 'semantic');
 			this.saveSettings();
+			this.captureZoom();  // preserve 2D pan/zoom across color mode switch
 			this.render();
 		});
 		btn3D.addEventListener('click', () => {
-			if (this.graph3D) { this.graph3D.dispose(); this.graph3D = null; }
+			if (this.graph3D) {
+				this.savedCameraState = this.graph3D.getCameraState(); // save 3D camera
+				this.graph3D.dispose(); this.graph3D = null;
+			} else {
+				this.captureZoom(); // save 2D zoom before going 3D
+			}
 			this.mode3D = !this.mode3D;
 			this.saveSettings();
 			this.render();
@@ -1596,7 +1613,13 @@ class SemanticGraphView extends ItemView {
 			kVal.textContent = String(k);
 			this.numClusters = k;
 			this.saveSettings();
-			if (this.colorMode === 'semantic') { this.computeClusters(k); this.render(); }
+			if (this.colorMode === 'semantic') {
+				this.computeClusters(k);
+				// preserve current view
+				if (this.graph3D) this.savedCameraState = this.graph3D.getCameraState();
+				else this.captureZoom();
+				this.render();
+			}
 		});
 
 		} // end else (embeddings exist)

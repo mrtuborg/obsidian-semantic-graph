@@ -336,6 +336,20 @@ export class Graph3D {
 		this.renderer.setSize(W, H);
 	}
 
+	/** Save camera position + OrbitControls target for restoring after a re-render */
+	getCameraState(): { px: number; py: number; pz: number; tx: number; ty: number; tz: number } {
+		return {
+			px: this.camera.position.x, py: this.camera.position.y, pz: this.camera.position.z,
+			tx: this.controls.target.x,  ty: this.controls.target.y,  tz: this.controls.target.z,
+		};
+	}
+
+	setCameraState(s: { px: number; py: number; pz: number; tx: number; ty: number; tz: number }) {
+		this.camera.position.set(s.px, s.py, s.pz);
+		this.controls.target.set(s.tx, s.ty, s.tz);
+		this.controls.update();
+	}
+
 	dispose() {
 		if (this.animId != null) cancelAnimationFrame(this.animId);
 		this.ro?.disconnect();
