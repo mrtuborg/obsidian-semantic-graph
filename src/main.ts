@@ -688,16 +688,22 @@ class SemanticGraphView extends ItemView {
 		const container = this.containerEl.children[1] as HTMLElement;
 		container.empty();
 		container.addClass('llm-graph-container');
-		const A = this.analytics!;
+
+		if (!this.analytics) {
+			container.createEl('p', { text: 'Loading graph…', cls: 'llm-graph-loading' });
+			return;
+		}
+		const A = this.analytics;
 
 		// ── Domain + type filter ──────────────────────────────────────
 		const domFilt = this.selectedDomains;
 		const hidden  = this.hiddenTypes;
 		const othersHidden = hidden.has('others');
+		const othersSet = A.othersTypeSet ?? new Set<string>();
 		const renderNodes = this.nodes.filter(n =>
 			(domFilt.size === 0 || domFilt.has(n.domain)) &&
 			!hidden.has(n.type) &&
-			!(othersHidden && A.othersTypeSet.has(n.type))
+			!(othersHidden && othersSet.has(n.type))
 		);
 		const renderNodeIds = new Set(renderNodes.map(n => n.id));
 		const renderEdges = this.edges.filter(e =>
@@ -706,7 +712,7 @@ class SemanticGraphView extends ItemView {
 
 		// Others color map — gray for all non-model types
 		this.extraColorMap.clear();
-		for (const t of A.othersTypeSet) this.extraColorMap.set(t, '#888888');
+		for (const t of othersSet) this.extraColorMap.set(t, '#888888');
 
 		// ── Auto-scale physics to graph size ───────────────────────────
 		const N = renderNodes.length;
@@ -901,9 +907,12 @@ class SemanticGraphView extends ItemView {
 					return DOMAIN_PALETTE[this.clusterMap.get(nd.id)! % DOMAIN_PALETTE.length];
 				return this.nodeTypeColor(nd.type);
 			};
-			const renderNodes3D = this.selectedDomains.size > 0
-				? this.nodes.filter(n => this.selectedDomains.has(n.domain))
-				: this.nodes;
+			// Apply same hiddenTypes + others filter as 2D
+			const renderNodes3D = this.nodes.filter(n =>
+				(this.selectedDomains.size === 0 || this.selectedDomains.has(n.domain)) &&
+				!hidden.has(n.type) &&
+				!(othersHidden && othersSet.has(n.type))
+			);
 			const nodeIdSet3D = new Set(renderNodes3D.map(n => n.id));
 			const degMap = A.degreeOf;
 
