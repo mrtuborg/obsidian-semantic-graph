@@ -668,16 +668,17 @@ class SemanticGraphView extends ItemView {
 		container.addClass('llm-graph-container');
 		const A = this.analytics!;
 
-		// ── Domain subgraph filter (computed early for N) ───────────────
+		// ── Domain + type filter ──────────────────────────────────────
 		const domFilt = this.selectedDomains;
-		const renderNodes = domFilt.size > 0
-			? this.nodes.filter(n => domFilt.has(n.domain))
-			: this.nodes;
+		const hidden  = this.hiddenTypes;
+		const renderNodes = this.nodes.filter(n =>
+			(domFilt.size === 0 || domFilt.has(n.domain)) &&
+			!hidden.has(n.type)
+		);
 		const renderNodeIds = new Set(renderNodes.map(n => n.id));
-		const renderEdges = domFilt.size > 0
-			? this.edges.filter(e =>
-				renderNodeIds.has(e.source as string) && renderNodeIds.has(e.target as string))
-			: this.edges;
+		const renderEdges = this.edges.filter(e =>
+			renderNodeIds.has(e.source as string) && renderNodeIds.has(e.target as string)
+		);
 
 		// ── Auto-scale physics to graph size ───────────────────────────
 		const N = renderNodes.length;
@@ -1786,11 +1787,11 @@ class SemanticGraphView extends ItemView {
 				row.addEventListener('click', () => {
 					if (this.hiddenTypes.has(typeName)) this.hiddenTypes.delete(typeName);
 					else this.hiddenTypes.add(typeName);
-					// Only toggle class — no full sidebar rebuild (keeps sliders + hub clicks alive)
 					this.layerRowMap.forEach((r, t) =>
 						r.toggleClass('llm-sb-layer-row--off', this.hiddenTypes.has(t)));
-					this.applyVisibility(adj);
 					this.saveSettings();
+					this.captureZoom();
+					this.render();
 				});
 			}
 		});
@@ -1798,15 +1799,17 @@ class SemanticGraphView extends ItemView {
 		allTypesBtn.addEventListener('click', () => {
 			this.hiddenTypes.clear();
 			this.layerRowMap.forEach(r => r.removeClass('llm-sb-layer-row--off'));
-			this.applyVisibility(adj);
 			this.saveSettings();
+			this.captureZoom();
+			this.render();
 		});
 		noneTypesBtn.addEventListener('click', () => {
 			A.layers.forEach(l => { if (l.count > 0) this.hiddenTypes.add(l.name.toLowerCase()); });
 			this.layerRowMap.forEach((r, t) =>
 				r.toggleClass('llm-sb-layer-row--off', this.hiddenTypes.has(t)));
-			this.applyVisibility(adj);
 			this.saveSettings();
+			this.captureZoom();
+			this.render();
 		});
 
 		// Edge types
