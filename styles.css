@@ -220,6 +220,11 @@
 .llm-sb-domain-row--active { background: var(--interactive-accent-hover); }
 .llm-sb-domain-row--active .llm-sb-bar-name { color: var(--text-on-accent); }
 .llm-sb-domain-row--active .llm-sb-bar-cnt  { color: var(--text-on-accent); }
+.llm-sb-domain-badge {
+  font-size: 11px; color: var(--text-muted);
+  padding: 2px 8px 4px;
+}
+.llm-sb-domain-badge a { color: var(--text-accent); cursor: pointer; }
 
 /* Hub rows */
 .llm-sb-hub-row {

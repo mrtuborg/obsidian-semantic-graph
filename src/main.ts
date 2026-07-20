@@ -162,7 +162,7 @@ interface GraphSettings {
 	labelFadeAt:    number;
 	labelSize:      number; // base font size in SVG units
 	searchQuery:    string;
-	selectedDomain: string | null;
+	selectedDomains: string[];
 	embeddingEndpoint: string;
 	embeddingModel:    string;
 }
@@ -178,7 +178,7 @@ const DEFAULT_SETTINGS: GraphSettings = {
 	labelFadeAt:    0.9,
 	labelSize:      10,
 	searchQuery:    '',
-	selectedDomain: null,
+	selectedDomains: [],
 	embeddingEndpoint: 'http://localhost:11434',
 	embeddingModel:    'nomic-embed-text',
 };
@@ -200,7 +200,7 @@ class SemanticGraphView extends ItemView {
 	private showOrphans    = false; // orphan nodes hidden by default
 	private selectedId: string | null = null;
 	private searchQuery    = '';
-	private selectedDomain: string | null = null;
+	private selectedDomains = new Set<string>();
 	private _labelsUserSet = false; // true once user explicitly toggles label button
 
 	// semantic search state
@@ -262,7 +262,7 @@ class SemanticGraphView extends ItemView {
 		this.labelFadeAt    = s.labelFadeAt ?? 0.9;
 		this.labelSize      = s.labelSize   ?? 10;
 		this.searchQuery    = s.searchQuery;
-		this.selectedDomain = s.selectedDomain ?? null;
+		this.selectedDomains  = new Set(s.selectedDomains ?? []);
 		this.embeddingEndpoint = s.embeddingEndpoint ?? 'http://localhost:11434';
 		this.embeddingModel    = s.embeddingModel    ?? 'nomic-embed-text';
 	}
@@ -280,7 +280,7 @@ class SemanticGraphView extends ItemView {
 			labelFadeAt:    this.labelFadeAt,
 			labelSize:      this.labelSize,
 			searchQuery:    this.searchQuery,
-			selectedDomain: this.selectedDomain,
+			selectedDomains: [...this.selectedDomains],
 			embeddingEndpoint: this.embeddingEndpoint,
 			embeddingModel:    this.embeddingModel,
 		};
@@ -523,30 +523,11 @@ class SemanticGraphView extends ItemView {
 		if (!this.selNodeEl) return;
 		const sel  = this.selectedId;
 		const neighbors = sel ? (adj.get(sel) ?? new Set()) : null;
-		const dom = this.selectedDomain;
-
-		// Compute domain neighbors from this.nodes (not from selNodeEl — datum access is unreliable there)
-		let domainNeighbors: Set<string> | null = null;
-		if (dom) {
-			domainNeighbors = new Set<string>();
-			for (const nd of this.nodes) {
-				if (nd.domain === dom) {
-					for (const nbId of (adj.get(nd.id) ?? [])) {
-						domainNeighbors.add(nbId);
-					}
-				}
-			}
-		}
 
 		// node opacity / display
 		this.selNodeEl.style('opacity', (d: WikiNode) => {
 			if (this.hiddenTypes.has(d.type)) return '0';
 			if (!this.showOrphans && (adj.get(d.id)?.size ?? 0) === 0) return '0';
-			if (dom) {
-				if (d.domain === dom) return '1';                  // domain node: full
-				if (domainNeighbors!.has(d.id)) return '0.35';    // cross-domain neighbor: dim
-				return '0';                                         // unrelated: hidden
-			}
 			if (!sel) return '1';
 			return d.id === sel || neighbors!.has(d.id) ? '1' : '0.07';
 		}).style('display', (d: WikiNode) => {
@@ -559,12 +540,6 @@ class SemanticGraphView extends ItemView {
 		const edgeOpacity = (e: any) => {
 			const s = (e.source as WikiNode), t = (e.target as WikiNode);
 			if (this.hiddenTypes.has(s.type) || this.hiddenTypes.has(t.type)) return '0';
-			if (dom) {
-				const sInDom = s.domain === dom, tInDom = t.domain === dom;
-				if (sInDom && tInDom) return '0.8';   // intra-domain edge: bright
-				if (sInDom || tInDom) return '0.35';  // cross-domain edge: medium
-				return '0';                             // unrelated: hidden
-			}
 			if (!sel) return '0.55';
 			return (s.id===sel || t.id===sel) ? '0.9' : '0.04';
 		};
@@ -587,8 +562,19 @@ class SemanticGraphView extends ItemView {
 		container.addClass('llm-graph-container');
 		const A = this.analytics!;
 
+		// ── Domain subgraph filter (computed early for N) ───────────────
+		const domFilt = this.selectedDomains;
+		const renderNodes = domFilt.size > 0
+			? this.nodes.filter(n => domFilt.has(n.domain))
+			: this.nodes;
+		const renderNodeIds = new Set(renderNodes.map(n => n.id));
+		const renderEdges = domFilt.size > 0
+			? this.edges.filter(e =>
+				renderNodeIds.has(e.source as string) && renderNodeIds.has(e.target as string))
+			: this.edges;
+
 		// ── Auto-scale physics to graph size ───────────────────────────
-		const N = this.nodes.length;
+		const N = renderNodes.length;
 		if (N > 0) {
 			// charge: more nodes → stronger repulsion needed
 			this.chargeStr = Math.min(800, Math.max(120, Math.round(N * 2)));
@@ -781,8 +767,8 @@ class SemanticGraphView extends ItemView {
 			.append('path').attr('d','M0,-3L6,0L0,3').attr('fill','var(--text-faint)');
 
 		// Resolve node refs
-		const nodeMap   = new Map(this.nodes.map(n=>[n.id,n]));
-		const simEdges  = this.edges.map(e=>({
+		const nodeMap   = new Map(renderNodes.map(n=>[n.id,n]));
+		const simEdges  = renderEdges.map(e=>({
 			...e,
 			source: nodeMap.get(e.source as string)!,
 			target: nodeMap.get(e.target as string)!,
@@ -807,7 +793,7 @@ class SemanticGraphView extends ItemView {
 			// Collision radius scales with N to prevent overlap
 			const collideR = Math.max(15, Math.sqrt(N) * 2);
 
-			this.sim = forceSimulation<WikiNode>(this.nodes)
+			this.sim = forceSimulation<WikiNode>(renderNodes)
 				.force('link',    linkForce)
 				.force('charge',  chargeForce)
 				.force('gx',      gX)
@@ -849,7 +835,7 @@ class SemanticGraphView extends ItemView {
 			// Nodes
 			const nodeEl = g.append('g')
 				.selectAll<SVGGElement,WikiNode>('g')
-				.data(this.nodes).join('g')
+			.data(renderNodes).join('g')
 				.attr('class','llm-graph-node')
 				.call(drag<SVGGElement,WikiNode>()
 					.on('start',(ev,d)=>{ if(!ev.active) this.sim?.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; })
@@ -1199,29 +1185,37 @@ class SemanticGraphView extends ItemView {
 			row.createSpan({cls:'llm-sb-hub-deg',text:String(h.deg)});
 		});
 
-		// Domain coverage — click to filter graph
+		// Domain coverage — click to toggle domain in subgraph filter
 		const ds = section('Domain Coverage');
+		// Show active filter count if any
+		if (this.selectedDomains.size > 0) {
+			const badge = ds.createDiv({ cls: 'llm-sb-domain-badge' });
+			badge.setText(`${this.selectedDomains.size} selected — `);
+			const clearAll = badge.createEl('a', { text: 'clear all' });
+			clearAll.addEventListener('click', (e) => {
+				e.stopPropagation();
+				this.selectedDomains.clear();
+				this.saveSettings();
+				this.render();
+			});
+		}
 		const maxD = Math.max(...A.domains.map(d=>d.count),1);
-		const domainRows = new Map<string, HTMLElement>();
 		for (const d of A.domains) {
-			const row = ds.createDiv({ cls: 'llm-sb-bar-row llm-sb-domain-row' });
-			domainRows.set(d.name, row);
-			if (this.selectedDomain === d.name) row.addClass('llm-sb-domain-row--active');
+			const isActive = this.selectedDomains.has(d.name);
+			const row = ds.createDiv({ cls: 'llm-sb-bar-row llm-sb-domain-row' + (isActive ? ' llm-sb-domain-row--active' : '') });
 			row.createSpan({ cls: 'llm-sb-bar-name', text: d.name });
 			const track = row.createDiv({ cls: 'llm-sb-track' });
 			const dfill = track.createDiv({ cls: 'llm-sb-fill' });
 			dfill.style.cssText = `width:${Math.max(d.count/maxD*100,4)}%;background:${domainColor(d.name)}`;
 			row.createSpan({ cls: 'llm-sb-bar-cnt', text: String(d.count) });
 			row.addEventListener('click', () => {
-				if (this.selectedDomain === d.name) {
-					this.selectedDomain = null;
-					domainRows.forEach(r => r.removeClass('llm-sb-domain-row--active'));
+				if (this.selectedDomains.has(d.name)) {
+					this.selectedDomains.delete(d.name);
 				} else {
-					this.selectedDomain = d.name;
-					domainRows.forEach((r, n) => r.toggleClass('llm-sb-domain-row--active', n === d.name));
+					this.selectedDomains.add(d.name);
 				}
-				this.applyVisibility(adj);
 				this.saveSettings();
+				this.render();
 			});
 		}
 	}
